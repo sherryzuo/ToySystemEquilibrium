@@ -1,0 +1,356 @@
+"""
+TestRunner.jl
+
+Complete test system runner for ToySystemQuad.jl modular implementation.
+Runs all three optimization models with full system parameters and saves detailed results.
+"""
+
+module TestRunner
+
+# Include all modules
+include("SystemConfig.jl")
+include("ProfileGeneration.jl") 
+include("OptimizationModels.jl")
+include("ConvergenceDiagnostics.jl")
+include("VisualizationTools.jl")
+include("PlottingModule.jl")
+
+using .SystemConfig
+using .ProfileGeneration
+using .OptimizationModels
+using .ConvergenceDiagnostics
+using .VisualizationTools
+using .PlottingModule
+using CSV, DataFrames
+
+export run_complete_test_system
+export compare_models_analysis
+
+"""
+    run_complete_test_system(; output_dir="results")
+
+Run complete test system with all three optimization models:
+1. Capacity Expansion Model (CEM) 
+2. Perfect Foresight Operations (DLAC-p)
+3. DLAC-i Operations (rolling horizon)
+
+Saves detailed results and comparisons to CSV files.
+"""
+function run_complete_test_system(; output_dir="results")
+    println("🚀 Running Complete ToySystemQuad Test System")
+    println("=" ^ 60)
+    
+    # Create system with full parameters (720 hours = 30 days)
+    generators, battery = create_toy_system()
+    params = get_default_system_parameters()
+    
+    println("System Configuration:")
+    println("  Time horizon: $(params.hours) hours ($(params.days) days)")
+    println("  Technologies:")
+    for (i, gen) in enumerate(generators)
+        println("    $i. $(gen.name): Fuel \$$(gen.fuel_cost)/MWh, Investment \$$(gen.inv_cost)/MW/yr")
+    end
+    println("    4. $(battery.name): Power \$$(battery.inv_cost_power)/MW/yr, Energy \$$(battery.inv_cost_energy)/MWh/yr")
+    
+    # Validate system
+    validate_system_configuration(generators, battery, params)
+    
+    # Generate profiles and validate
+    println("\n📊 Generating system profiles...")
+    actual_demand, actual_wind, nuclear_availability, gas_availability,
+    demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios = 
+        create_actual_and_scenarios(params)
+    
+    validate_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability, params)
+    
+    # Save profiles to CSV
+    save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
+                        demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+                        output_dir)
+    
+    # STEP 1: Capacity Expansion Model
+    println("\n" * "=" * 25 * " CAPACITY EXPANSION MODEL " * "=" * 25)
+    
+    cem_result = solve_capacity_expansion_model(generators, battery; 
+                                               params=params, 
+                                               output_dir=output_dir)
+    
+    if cem_result["status"] != "optimal"
+        println("❌ Capacity Expansion Model failed: $(cem_result["status"])")
+        return Dict("status" => "failed", "stage" => "CEM", "result" => cem_result)
+    end
+    
+    println("✅ Capacity Expansion Model solved successfully!")
+    optimal_capacities = cem_result["capacity"]
+    optimal_battery_power = cem_result["battery_power_cap"]
+    optimal_battery_energy = cem_result["battery_energy_cap"]
+    
+    print_capacity_results(generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    
+    # Save capacity expansion operations and profits
+    calculate_profits_and_save(generators, battery, cem_result,
+                               optimal_capacities, optimal_battery_power, optimal_battery_energy,
+                               "capacity_expansion", output_dir)
+    
+    # STEP 2: Perfect Foresight Operations
+    println("\n" * "=" * 25 * " PERFECT FORESIGHT OPERATIONS " * "=" * 21)
+    
+    pf_result = solve_perfect_foresight_operations(generators, battery, 
+                                                  optimal_capacities,
+                                                  optimal_battery_power, 
+                                                  optimal_battery_energy;
+                                                  params=params,
+                                                  output_dir=output_dir)
+    
+    if pf_result["status"] != "optimal"
+        println("❌ Perfect Foresight Operations failed: $(pf_result["status"])")
+        return Dict("status" => "failed", "stage" => "PF", "result" => pf_result)
+    end
+    
+    println("✅ Perfect Foresight Operations solved successfully!")
+    
+    # STEP 3: DLAC-i Operations
+    println("\n" * "=" * 25 * " DLAC-I OPERATIONS " * "=" * 27)
+    
+    dlac_result = solve_dlac_i_operations(generators, battery,
+                                         optimal_capacities,
+                                         optimal_battery_power,
+                                         optimal_battery_energy;
+                                         lookahead_hours=24,
+                                         params=params,
+                                         output_dir=output_dir)
+    
+    if dlac_result["status"] != "optimal"
+        println("❌ DLAC-i Operations failed: $(dlac_result["status"])")
+        return Dict("status" => "failed", "stage" => "DLAC-i", "result" => dlac_result)
+    end
+    
+    println("✅ DLAC-i Operations solved successfully!")
+    
+    # STEP 4: Profit Analysis and PMR Calculation
+    println("\n" * "=" * 25 * " PROFIT ANALYSIS " * "=" * 29)
+    
+    pf_profits = calculate_profits_and_save(generators, battery, pf_result,
+                                           optimal_capacities, optimal_battery_power, optimal_battery_energy,
+                                           "perfect_foresight", output_dir)
+    
+    dlac_profits = calculate_profits_and_save(generators, battery, dlac_result,
+                                             optimal_capacities, optimal_battery_power, optimal_battery_energy,
+                                             "dlac_i", output_dir)
+    
+    # Calculate PMRs
+    pf_pmr = compute_pmr(pf_result, generators, battery, 
+                        optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    dlac_pmr = compute_pmr(dlac_result, generators, battery,
+                          optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    
+    println("Perfect Foresight PMRs (%): $(round.(pf_pmr, digits=2))")
+    println("DLAC-i PMRs (%): $(round.(dlac_pmr, digits=2))")
+    
+    # STEP 5: Comprehensive Model Comparison
+    println("\n" * "=" * 25 * " MODEL COMPARISON " * "=" * 28)
+    
+    comparison_results = compare_models_analysis(cem_result, pf_result, dlac_result, 
+                                               generators, battery, optimal_capacities,
+                                               optimal_battery_power, optimal_battery_energy,
+                                               output_dir)
+    
+    # STEP 6: Generate Comprehensive Plots
+    println("\n" * "=" * 25 * " GENERATING PLOTS " * "=" * 28)
+    
+    generate_all_plots(cem_result, pf_result, dlac_result, 
+                      actual_demand, actual_wind, nuclear_availability, gas_availability,
+                      generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+    
+    println("\nComplete test system finished successfully!")
+    println("All results saved to: $(output_dir)/")
+    
+    return Dict(
+        "status" => "success",
+        "cem" => cem_result,
+        "perfect_foresight" => pf_result,
+        "dlac_i" => dlac_result,
+        "comparison" => comparison_results
+    )
+end
+
+"""
+    save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
+                        demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+                        output_dir)
+
+Save system profiles and forecast scenarios to CSV files.
+"""
+function save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
+                             demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+                             output_dir)
+    mkpath(output_dir)
+    
+    T = length(actual_demand)
+    
+    # Save actual profiles
+    profiles_df = DataFrame(
+        Hour = 1:T,
+        Demand_MW = actual_demand,
+        Wind_CF = actual_wind,
+        Nuclear_Available = nuclear_availability,
+        Gas_Available = gas_availability
+    )
+    CSV.write(joinpath(output_dir, "demand_wind_profiles.csv"), profiles_df)
+    
+    # Save scenarios for DLAC-i analysis
+    scenarios_df = DataFrame(
+        Hour = repeat(1:T, length(demand_scenarios)),
+        Scenario = vcat([fill(s, T) for s in 1:length(demand_scenarios)]...),
+        Demand_MW = vcat(demand_scenarios...),
+        Wind_CF = vcat(wind_scenarios...),
+        Nuclear_Available = vcat(nuclear_avail_scenarios...),
+        Gas_Available = vcat(gas_avail_scenarios...)
+    )
+    CSV.write(joinpath(output_dir, "demand_wind_outage_profiles.csv"), scenarios_df)
+    
+    println("System profiles saved to CSV files")
+end
+
+"""
+    compare_models_analysis(cem_result, pf_result, dlac_result, generators, battery, 
+                           optimal_capacities, optimal_battery_power, optimal_battery_energy, output_dir)
+
+Comprehensive comparison analysis between the three models.
+"""
+function compare_models_analysis(cem_result, pf_result, dlac_result, generators, battery,
+                                optimal_capacities, optimal_battery_power, optimal_battery_energy, output_dir)
+    
+    # Calculate PMRs for each model
+    pf_pmr = compute_pmr(pf_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    dlac_pmr = compute_pmr(dlac_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    
+    # Three-model comparison
+    comparison_df = DataFrame(
+        Technology = [gen.name for gen in generators; "Battery"],
+        Capacity_MW = [optimal_capacities; optimal_battery_power],
+        CEM_Total_Cost = cem_result["total_cost"],
+        PF_Operational_Cost = pf_result["total_cost"],
+        DLAC_i_Operational_Cost = dlac_result["total_cost"],
+        PF_PMR_Percent = pf_pmr,
+        DLAC_i_PMR_Percent = dlac_pmr
+    )
+    CSV.write(joinpath(output_dir, "three_model_comprehensive_comparison.csv"), comparison_df)
+    
+    # Detailed PF vs DLAC-i comparison
+    T = length(pf_result["prices"])
+    detailed_comparison_df = DataFrame(
+        Hour = 1:T,
+        PF_Price = pf_result["prices"],
+        DLAC_i_Price = dlac_result["prices"],
+        Price_Difference = dlac_result["prices"] - pf_result["prices"],
+        PF_Load_Shed = pf_result["load_shed"],
+        DLAC_i_Load_Shed = dlac_result["load_shed"],
+        Load_Shed_Difference = dlac_result["load_shed"] - pf_result["load_shed"]
+    )
+    
+    # Add generation differences
+    for (g, gen) in enumerate(generators)
+        detailed_comparison_df[!, "PF_$(gen.name)_Gen"] = pf_result["generation"][g, :]
+        detailed_comparison_df[!, "DLAC_i_$(gen.name)_Gen"] = dlac_result["generation"][g, :]
+        detailed_comparison_df[!, "$(gen.name)_Gen_Diff"] = dlac_result["generation"][g, :] - pf_result["generation"][g, :]
+    end
+    
+    CSV.write(joinpath(output_dir, "pf_vs_dlac_i_comprehensive_comparison.csv"), detailed_comparison_df)
+    
+    # Summary statistics
+    summary_stats = DataFrame(
+        Metric = ["PF_Total_Cost", "DLAC_i_Total_Cost", "Cost_Difference", 
+                 "PF_Total_Load_Shed", "DLAC_i_Total_Load_Shed", "Load_Shed_Difference",
+                 "PF_Avg_Price", "DLAC_i_Avg_Price", "Price_Difference",
+                 "PF_Max_Price", "DLAC_i_Max_Price"],
+        Value = [pf_result["total_cost"], dlac_result["total_cost"], 
+                dlac_result["total_cost"] - pf_result["total_cost"],
+                sum(pf_result["load_shed"]), sum(dlac_result["load_shed"]),
+                sum(dlac_result["load_shed"]) - sum(pf_result["load_shed"]),
+                mean(pf_result["prices"]), mean(dlac_result["prices"]),
+                mean(dlac_result["prices"]) - mean(pf_result["prices"]),
+                maximum(pf_result["prices"]), maximum(dlac_result["prices"])]
+    )
+    CSV.write(joinpath(output_dir, "comprehensive_forecast_quality_analysis.csv"), summary_stats)
+    
+    println("Comprehensive model comparison saved to CSV files")
+    
+    return Dict(
+        "comparison" => comparison_df,
+        "detailed_comparison" => detailed_comparison_df,
+        "summary_stats" => summary_stats
+    )
+end
+
+"""
+    generate_system_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind, 
+                         nuclear_availability, gas_availability, generators, battery, output_dir)
+
+Generate comprehensive system visualization plots.
+"""
+function generate_system_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
+                              nuclear_availability, gas_availability, generators, battery, output_dir)
+    plots_dir = joinpath(output_dir, "plots")
+    mkpath(plots_dir)
+    
+    try
+        # System profiles plot
+        plot_demand_wind_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability;
+                                 save_path=joinpath(plots_dir, "system_profiles.png"))
+        
+        # Price duration curves comparison
+        price_plot = plot_price_duration_curve(pf_result["prices"]; 
+                                              save_path=joinpath(plots_dir, "pf_price_duration.png"))
+        
+        dlac_price_plot = plot_price_duration_curve(dlac_result["prices"];
+                                                   save_path=joinpath(plots_dir, "dlac_i_price_duration.png"))
+        
+        # Combined price analysis
+        using Plots
+        combined_price_plot = plot(title="Price Duration Curves Comparison", 
+                                  xlabel="Hours", ylabel="Price (\$/MWh)",
+                                  size=(1000, 600), legend=:topright)
+        
+        sorted_pf_prices = sort(pf_result["prices"], rev=true)
+        sorted_dlac_prices = sort(dlac_result["prices"], rev=true)
+        hours = 1:length(sorted_pf_prices)
+        
+        plot!(combined_price_plot, hours, sorted_pf_prices, label="Perfect Foresight", lw=2, color=:blue)
+        plot!(combined_price_plot, hours, sorted_dlac_prices, label="DLAC-i", lw=2, color=:red, linestyle=:dash)
+        
+        savefig(combined_price_plot, joinpath(plots_dir, "price_duration_curves.png"))
+        
+        println("📈 System plots saved to: $(plots_dir)/")
+        
+    catch e
+        println("⚠️  Plot generation failed (likely missing Plots.jl): $e")
+        println("   Results are still available in CSV files")
+    end
+end
+
+"""
+    print_capacity_results(generators, battery, capacities, battery_power_cap, battery_energy_cap)
+
+Print formatted capacity results.
+"""
+function print_capacity_results(generators, battery, capacities, battery_power_cap, battery_energy_cap)
+    println("\nOptimal Capacities:")
+    total_investment = 0.0
+    
+    for (i, gen) in enumerate(generators)
+        capacity_mw = round(capacities[i], digits=1)
+        investment_cost = gen.inv_cost * capacities[i]
+        total_investment += investment_cost
+        println("  $(gen.name): $(capacity_mw) MW (\$$(round(investment_cost/1e6, digits=1))M investment)")
+    end
+    
+    battery_investment = battery.inv_cost_power * battery_power_cap + battery.inv_cost_energy * battery_energy_cap
+    total_investment += battery_investment
+    
+    println("  Battery: $(round(battery_power_cap, digits=1)) MW / $(round(battery_energy_cap, digits=1)) MWh")
+    println("           (\$$(round(battery_investment/1e6, digits=1))M investment)")
+    println("  Total Investment: \$$(round(total_investment/1e6, digits=1))M")
+end
+
+end # module TestRunner
