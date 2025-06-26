@@ -80,7 +80,7 @@ min: Σ(c^inv_n * y_n) + Σ(c^fix_n * y_n) + Σ_t Σ_n (c^op_n * p_n,t)
 
 Subject to power balance, generation limits, and storage constraints.
 
-### 2. Perfect Foresight Operations (DLAC-p)
+### 2. Perfect Foresight Operations (PF)
 
 Operations optimization with fixed capacities and perfect information:
 
