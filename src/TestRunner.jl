@@ -11,17 +11,13 @@ module TestRunner
 include("SystemConfig.jl")
 include("ProfileGeneration.jl") 
 include("OptimizationModels.jl")
-include("ConvergenceDiagnostics.jl")
-include("VisualizationTools.jl")
 include("PlottingModule.jl")
 
 using .SystemConfig
 using .ProfileGeneration
 using .OptimizationModels
-using .ConvergenceDiagnostics
-using .VisualizationTools
 using .PlottingModule
-using CSV, DataFrames
+using CSV, DataFrames, Plots
 
 export run_complete_test_system
 export compare_models_analysis
@@ -69,7 +65,7 @@ function run_complete_test_system(; output_dir="results")
                         output_dir)
     
     # STEP 1: Capacity Expansion Model
-    println("\n" * "=" * 25 * " CAPACITY EXPANSION MODEL " * "=" * 25)
+    println("\n" * "=" ^ 25 * " CAPACITY EXPANSION MODEL " * "=" ^ 25)
     
     cem_result = solve_capacity_expansion_model(generators, battery; 
                                                params=params, 
@@ -226,16 +222,26 @@ function compare_models_analysis(cem_result, pf_result, dlac_result, generators,
     dlac_pmr = compute_pmr(dlac_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
     
     # Three-model comparison
+    n_technologies = length(generators) + 1  # +1 for battery
+    tech_names = [gen.name for gen in generators]
+    push!(tech_names, "Battery")
+    capacities_array = copy(optimal_capacities)
+    push!(capacities_array, optimal_battery_power)
+    
     comparison_df = DataFrame(
-        Technology = [gen.name for gen in generators; "Battery"],
-        Capacity_MW = [optimal_capacities; optimal_battery_power],
-        CEM_Total_Cost = cem_result["total_cost"],
-        PF_Operational_Cost = pf_result["total_cost"],
-        DLAC_i_Operational_Cost = dlac_result["total_cost"],
+        Technology = tech_names,
+        Capacity_MW = capacities_array,
         PF_PMR_Percent = pf_pmr,
         DLAC_i_PMR_Percent = dlac_pmr
     )
+    
+    # Add summary costs as a separate DataFrame
+    summary_df = DataFrame(
+        Model = ["CEM", "Perfect_Foresight", "DLAC_i"],
+        Total_Cost = [cem_result["total_cost"], pf_result["total_cost"], dlac_result["total_cost"]]
+    )
     CSV.write(joinpath(output_dir, "three_model_comprehensive_comparison.csv"), comparison_df)
+    CSV.write(joinpath(output_dir, "three_model_cost_summary.csv"), summary_df)
     
     # Detailed PF vs DLAC-i comparison
     T = length(pf_result["prices"])
@@ -278,55 +284,10 @@ function compare_models_analysis(cem_result, pf_result, dlac_result, generators,
     
     return Dict(
         "comparison" => comparison_df,
+        "cost_summary" => summary_df,
         "detailed_comparison" => detailed_comparison_df,
         "summary_stats" => summary_stats
     )
-end
-
-"""
-    generate_system_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind, 
-                         nuclear_availability, gas_availability, generators, battery, output_dir)
-
-Generate comprehensive system visualization plots.
-"""
-function generate_system_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
-                              nuclear_availability, gas_availability, generators, battery, output_dir)
-    plots_dir = joinpath(output_dir, "plots")
-    mkpath(plots_dir)
-    
-    try
-        # System profiles plot
-        plot_demand_wind_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability;
-                                 save_path=joinpath(plots_dir, "system_profiles.png"))
-        
-        # Price duration curves comparison
-        price_plot = plot_price_duration_curve(pf_result["prices"]; 
-                                              save_path=joinpath(plots_dir, "pf_price_duration.png"))
-        
-        dlac_price_plot = plot_price_duration_curve(dlac_result["prices"];
-                                                   save_path=joinpath(plots_dir, "dlac_i_price_duration.png"))
-        
-        # Combined price analysis
-        using Plots
-        combined_price_plot = plot(title="Price Duration Curves Comparison", 
-                                  xlabel="Hours", ylabel="Price (\$/MWh)",
-                                  size=(1000, 600), legend=:topright)
-        
-        sorted_pf_prices = sort(pf_result["prices"], rev=true)
-        sorted_dlac_prices = sort(dlac_result["prices"], rev=true)
-        hours = 1:length(sorted_pf_prices)
-        
-        plot!(combined_price_plot, hours, sorted_pf_prices, label="Perfect Foresight", lw=2, color=:blue)
-        plot!(combined_price_plot, hours, sorted_dlac_prices, label="DLAC-i", lw=2, color=:red, linestyle=:dash)
-        
-        savefig(combined_price_plot, joinpath(plots_dir, "price_duration_curves.png"))
-        
-        println("📈 System plots saved to: $(plots_dir)/")
-        
-    catch e
-        println("⚠️  Plot generation failed (likely missing Plots.jl): $e")
-        println("   Results are still available in CSV files")
-    end
 end
 
 """

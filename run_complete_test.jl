@@ -7,8 +7,7 @@ Main script to run the complete ToySystemQuad test system.
 Executes all three optimization models with full system parameters.
 """
 
-include("TestRunner.jl")
-using .TestRunner
+using ToySystemQuad
 
 function main()
     println("Starting Complete ToySystemQuad Test System")

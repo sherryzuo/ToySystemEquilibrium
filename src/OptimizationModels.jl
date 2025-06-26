@@ -14,7 +14,7 @@ using ..SystemConfig: Generator, Battery, SystemParameters, get_default_system_p
 using ..ProfileGeneration: create_actual_and_scenarios
 
 export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations
-export save_operational_results, calculate_profits_and_save
+export save_operational_results, calculate_profits_and_save, compute_pmr
 
 # =============================================================================
 # 1. CAPACITY EXPANSION MODEL (CEM)
@@ -612,6 +612,70 @@ function calculate_profits_and_save(generators, battery, operational_results, ca
     CSV.write(joinpath(output_dir, "$(model_name)_profits.csv"), profit_df)
     
     return profit_df
+end
+
+"""
+    compute_pmr(operational_results, generators, battery, capacities, battery_power_cap, battery_energy_cap)
+
+Compute Profit-to-Market-Rate (PMR) for all technologies.
+PMR = (net_profit / total_fixed_costs) * 100
+
+Returns array of PMR percentages: [gen1_pmr, gen2_pmr, gen3_pmr, battery_pmr]
+"""
+function compute_pmr(operational_results, generators, battery, capacities, battery_power_cap, battery_energy_cap)
+    G = length(generators)
+    T = length(operational_results["prices"])
+    pmr = zeros(G + 1)  # +1 for battery
+    
+    # Generator PMRs
+    for g in 1:G
+        if capacities[g] > 1e-6  # Only compute for non-zero capacities
+            # Revenue
+            energy_revenue = sum(operational_results["prices"][t] * operational_results["generation"][g,t] for t in 1:T)
+            
+            # Costs
+            fuel_costs = sum(generators[g].fuel_cost * operational_results["generation"][g,t] for t in 1:T)
+            vom_costs = sum(generators[g].var_om_cost * operational_results["generation"][g,t] for t in 1:T)
+            # Note: startup costs not tracked in current implementation, assuming zero
+            startup_costs = 0.0
+            fixed_om_costs = generators[g].fixed_om_cost * capacities[g]
+            investment_costs = generators[g].inv_cost * capacities[g]
+            
+            operating_profit = energy_revenue - fuel_costs - vom_costs - startup_costs
+            net_profit = operating_profit - (investment_costs + fixed_om_costs)
+            
+            # PMR calculation
+            total_fixed_costs = investment_costs + fixed_om_costs
+            if total_fixed_costs > 1e-6
+                pmr[g] = (net_profit / total_fixed_costs) * 100
+            end
+        end
+    end
+    
+    # Battery PMR
+    if battery_power_cap > 1e-6
+        # Revenue from arbitrage
+        battery_energy_revenue = sum(operational_results["prices"][t] * operational_results["battery_discharge"][t] for t in 1:T)
+        battery_energy_costs = sum(operational_results["prices"][t] * operational_results["battery_charge"][t] for t in 1:T)
+        battery_net_energy_revenue = battery_energy_revenue - battery_energy_costs
+        
+        # Costs
+        battery_vom_costs = sum(battery.var_om_cost * (operational_results["battery_charge"][t] + 
+                               operational_results["battery_discharge"][t]) for t in 1:T)
+        battery_fixed_costs = battery.fixed_om_cost * battery_power_cap
+        battery_investment_costs = battery.inv_cost_power * battery_power_cap + battery.inv_cost_energy * battery_energy_cap
+        
+        battery_operating_profit = battery_net_energy_revenue - battery_vom_costs
+        battery_net_profit = battery_operating_profit - (battery_investment_costs + battery_fixed_costs)
+        
+        # Battery PMR
+        battery_total_fixed_costs = battery_investment_costs + battery_fixed_costs
+        if battery_total_fixed_costs > 1e-6
+            pmr[G + 1] = (battery_net_profit / battery_total_fixed_costs) * 100
+        end
+    end
+    
+    return pmr
 end
 
 end # module OptimizationModels
