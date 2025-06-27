@@ -12,7 +12,8 @@ using Random, Statistics
 # Define SystemParameters locally to avoid circular dependency
 struct SystemParameters
     hours::Int              # Total simulation hours
-    days::Int               # Number of days
+    days::Int 
+    N::Int              # Number of days
     random_seed::Int        # For reproducibility
     load_shed_penalty::Float64  # $/MWh penalty for unserved energy
     load_shed_quad::Float64     # Quadratic load shed penalty coefficient
@@ -199,22 +200,22 @@ end
 """
     generate_nuclear_availability(params::SystemParameters)
 
-Generate nuclear availability profile for a 5-generator fleet.
+Generate nuclear availability profile for a 2-generator fleet.
 Returns the mean availability across the fleet.
 """
 function generate_nuclear_availability(params::SystemParameters)
-    fleet_mean, _ = generate_fleet_availability(params, :nuclear, 5)
+    fleet_mean, _ = generate_fleet_availability(params, :nuclear)
     return fleet_mean
 end
 
 """
     generate_gas_availability(params::SystemParameters)
 
-Generate gas availability profile for a 5-generator fleet.
+Generate gas availability profile for a 2-generator fleet.
 Returns the mean availability across the fleet.
 """
 function generate_gas_availability(params::SystemParameters)
-    fleet_mean, _ = generate_fleet_availability(params, :gas, 5)
+    fleet_mean, _ = generate_fleet_availability(params, :gas)
     return fleet_mean
 end
 
@@ -333,12 +334,13 @@ function generate_single_gas_availability(params::SystemParameters, generator_id
 end
 
 """
-    generate_fleet_availability(params::SystemParameters, unit_type::Symbol, n_generators::Int=5)
+    generate_fleet_availability(params::SystemParameters, unit_type::Symbol)
 
 Generate availability profiles for a fleet of generators and return the mean availability.
 Returns both individual generator paths and the fleet mean.
 """
-function generate_fleet_availability(params::SystemParameters, unit_type::Symbol, n_generators::Int=5)
+function generate_fleet_availability(params::SystemParameters, unit_type::Symbol)
+    n_generators = params.N  #
     generator_paths = []
     
     for gen_id in 1:n_generators
@@ -398,18 +400,20 @@ function generate_scenarios(actual_demand, actual_wind, nuclear_availability, ga
         # Nuclear availability scenarios - generate new fleet with different seed
         nuclear_scenario_params = SystemParameters(
             params.hours, params.days, 
+            params.N,
             params.random_seed + scenario * 100000,
             params.load_shed_penalty, params.load_shed_quad
         )
-        nuclear_fleet_mean, _ = generate_fleet_availability(nuclear_scenario_params, :nuclear, 5)
+        nuclear_fleet_mean, _ = generate_fleet_availability(nuclear_scenario_params, :nuclear)
         
         # Gas availability scenarios - generate new fleet with different seed  
         gas_scenario_params = SystemParameters(
             params.hours, params.days,
+            params.N,
             params.random_seed + scenario * 200000, 
             params.load_shed_penalty, params.load_shed_quad
         )
-        gas_fleet_mean, _ = generate_fleet_availability(gas_scenario_params, :gas, 5)
+        gas_fleet_mean, _ = generate_fleet_availability(gas_scenario_params, :gas)
         
         push!(demand_scenarios, scenario_demand)
         push!(wind_scenarios, scenario_wind)

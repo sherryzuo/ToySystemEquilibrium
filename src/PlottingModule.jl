@@ -12,6 +12,7 @@ using ..SystemConfig: Generator, Battery, SystemProfiles
 
 export plot_price_time_series, plot_price_duration_curves, plot_combined_price_analysis
 export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison
+export plot_battery_operations, plot_battery_soc_comparison
 export generate_all_plots, save_price_analysis
 
 """
@@ -300,6 +301,93 @@ function plot_capacity_comparison(generators, battery, optimal_capacities, optim
 end
 
 """
+    plot_battery_operations(battery_results, model_names; save_path=nothing)
+
+Plot battery charge/discharge operations for all models.
+"""
+function plot_battery_operations(battery_results, model_names; save_path=nothing)
+    plots_list = []
+    colors = [:blue, :red, :green]
+    
+    for (i, model_name) in enumerate(model_names)
+        if haskey(battery_results, model_name)
+            charge = battery_results[model_name]["charge"]
+            discharge = battery_results[model_name]["discharge"]
+            T = length(charge)
+            hours = 1:T
+            
+            p = plot(title="Battery Operations - $model_name",
+                    xlabel="Hour",
+                    ylabel="Power (MW)",
+                    size=(1000, 400),
+                    legend=:topright)
+            
+            # Plot charging (negative values)
+            plot!(p, hours, -charge, label="Charging", color=colors[i], alpha=0.7, fillrange=0)
+            
+            # Plot discharging (positive values)
+            plot!(p, hours, discharge, label="Discharging", color=colors[i], alpha=0.9, fillrange=0)
+            
+            # Add zero line
+            hline!(p, [0], color=:black, linestyle=:dash, alpha=0.5, label="")
+            
+            push!(plots_list, p)
+        end
+    end
+    
+    # Combine all battery operation plots
+    if length(plots_list) == 3
+        combined_plot = plot(plots_list..., layout=(3,1), size=(1000, 1200))
+    else
+        combined_plot = plot(plots_list..., layout=(length(plots_list),1), size=(1000, 400*length(plots_list)))
+    end
+    
+    if save_path !== nothing
+        savefig(combined_plot, save_path)
+        println("Battery operations plot saved: $save_path")
+    end
+    
+    return combined_plot
+end
+
+"""
+    plot_battery_soc_comparison(battery_results, model_names; save_path=nothing)
+
+Plot battery state of charge comparison across models.
+"""
+function plot_battery_soc_comparison(battery_results, model_names; save_path=nothing)
+    colors = [:blue, :red, :green]
+    linestyles = [:solid, :dash, :dot]
+    
+    p = plot(title="Battery State of Charge Comparison",
+             xlabel="Hour",
+             ylabel="SOC (MWh)",
+             size=(1200, 600),
+             legend=:topright)
+    
+    for (i, model_name) in enumerate(model_names)
+        if haskey(battery_results, model_name)
+            soc = battery_results[model_name]["soc"]
+            T = length(soc)
+            hours = 1:T
+            
+            plot!(p, hours, soc,
+                  label=model_name,
+                  color=colors[i],
+                  linestyle=linestyles[i],
+                  linewidth=2)
+        end
+    end
+    
+    if save_path !== nothing
+        savefig(p, save_path)
+        println("Battery SOC comparison plot saved: $save_path")
+    end
+    
+    return p
+end
+
+"""
     save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
 
 Save detailed price analysis to CSV files.
@@ -378,14 +466,43 @@ function generate_all_plots(cem_result, pf_result, dlac_result, profiles::System
             ("DLAC-i", dlac_result["generation"])
         ]
         
-        battery_results = Dict(
+        battery_discharge_results = Dict(
             "Capacity Expansion" => cem_result["battery_discharge"],
             "Perfect Foresight" => pf_result["battery_discharge"],
             "DLAC-i" => dlac_result["battery_discharge"]
         )
         
-        plot_generation_stacks(generation_results, battery_results, profiles.actual_demand, generators;
+        plot_generation_stacks(generation_results, battery_discharge_results, profiles.actual_demand, generators;
                               save_path=joinpath(plots_dir, "generation_stacks.png"))
+        
+        # Battery operations plots
+        battery_detailed_results = Dict(
+            "Capacity Expansion" => Dict(
+                "charge" => cem_result["battery_charge"],
+                "discharge" => cem_result["battery_discharge"],
+                "soc" => cem_result["battery_soc"]
+            ),
+            "Perfect Foresight" => Dict(
+                "charge" => pf_result["battery_charge"],
+                "discharge" => pf_result["battery_discharge"],
+                "soc" => pf_result["battery_soc"]
+            ),
+            "DLAC-i" => Dict(
+                "charge" => dlac_result["battery_charge"],
+                "discharge" => dlac_result["battery_discharge"],
+                "soc" => dlac_result["battery_soc"]
+            )
+        )
+        
+        model_names = ["Capacity Expansion", "Perfect Foresight", "DLAC-i"]
+        
+        # Plot battery operations (charge/discharge)
+        plot_battery_operations(battery_detailed_results, model_names;
+                               save_path=joinpath(plots_dir, "battery_operations.png"))
+        
+        # Plot battery SOC comparison
+        plot_battery_soc_comparison(battery_detailed_results, model_names;
+                                   save_path=joinpath(plots_dir, "battery_soc_comparison.png"))
         
         # System profiles
         plot_system_profiles(profiles; save_path=joinpath(plots_dir, "system_profiles.png"))
@@ -455,14 +572,43 @@ function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, a
             ("DLAC-i", dlac_result["generation"])
         ]
         
-        battery_results = Dict(
+        battery_discharge_results = Dict(
             "Capacity Expansion" => cem_result["battery_discharge"],
             "Perfect Foresight" => pf_result["battery_discharge"],
             "DLAC-i" => dlac_result["battery_discharge"]
         )
         
-        plot_generation_stacks(generation_results, battery_results, actual_demand, generators;
+        plot_generation_stacks(generation_results, battery_discharge_results, actual_demand, generators;
                               save_path=joinpath(plots_dir, "generation_stacks.png"))
+        
+        # Battery operations plots
+        battery_detailed_results = Dict(
+            "Capacity Expansion" => Dict(
+                "charge" => cem_result["battery_charge"],
+                "discharge" => cem_result["battery_discharge"],
+                "soc" => cem_result["battery_soc"]
+            ),
+            "Perfect Foresight" => Dict(
+                "charge" => pf_result["battery_charge"],
+                "discharge" => pf_result["battery_discharge"],
+                "soc" => pf_result["battery_soc"]
+            ),
+            "DLAC-i" => Dict(
+                "charge" => dlac_result["battery_charge"],
+                "discharge" => dlac_result["battery_discharge"],
+                "soc" => dlac_result["battery_soc"]
+            )
+        )
+        
+        model_names = ["Capacity Expansion", "Perfect Foresight", "DLAC-i"]
+        
+        # Plot battery operations (charge/discharge)
+        plot_battery_operations(battery_detailed_results, model_names;
+                               save_path=joinpath(plots_dir, "battery_operations.png"))
+        
+        # Plot battery SOC comparison
+        plot_battery_soc_comparison(battery_detailed_results, model_names;
+                                   save_path=joinpath(plots_dir, "battery_soc_comparison.png"))
         
         # System profiles
         plot_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability;

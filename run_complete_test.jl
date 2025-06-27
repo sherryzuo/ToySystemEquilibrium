@@ -8,17 +8,13 @@ Executes all three optimization models with full system parameters.
 """
 
 using Revise
-
-# Load the local ToySystemQuad module
-push!(LOAD_PATH, @__DIR__)
-include("src/ToySystemQuad.jl")
-using .ToySystemQuad
+using ToySystemQuad
 
 function main()
     println("Starting Complete ToySystemQuad Test System")
     println("This will run all three optimization models with:")
     println("  - 720-hour horizon (30 days)")
-    println("  - Fleet-based thermal generation (5 generators per technology)")
+    println("  - Fleet-based thermal generation (2 generators per technology)")
     println("  - 5 stochastic scenarios for DLAC-i operations")
     println("  - Realistic wind forecast error modeling")
     println()
@@ -47,6 +43,8 @@ function main()
         println("- Price duration curves: price_duration_curves.png")
         println("- Comprehensive price analysis: comprehensive_price_analysis.png")
         println("- Generation stacks: generation_stacks.png")
+        println("- Battery operations: battery_operations.png (charge/discharge by model)")
+        println("- Battery SOC comparison: battery_soc_comparison.png (state of charge across models)")
         println("- System profiles: system_profiles.png")
         println("- Capacity comparison: capacity_comparison.png")
         

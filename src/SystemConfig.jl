@@ -78,6 +78,7 @@ function get_default_system_parameters()
     return SystemParameters(
         720,    # hours (30 days)
         30,     # days
+        5,    # N (number of generators per technology)
         42,     # random_seed
         10000.0, # load_shed_penalty
         0.001   # load_shed_quad
@@ -115,9 +116,9 @@ function create_wind_generator()
     return Generator(
         "Wind",       # name
         0.0,          # fuel_cost ($/MWh)
-        3.0,          # var_om_cost ($/MWh)
+        0.0,          # var_om_cost ($/MWh)
         85000.0,      # inv_cost ($/MW/year)
-        22000.0,      # fixed_om_cost ($/MW/year)
+        12000.0,      # fixed_om_cost ($/MW/year)
         1500.0,       # max_capacity (MW)
         0.0,          # min_stable_gen (fraction)
         1.0,          # ramp_rate (fraction/hour)
@@ -135,10 +136,10 @@ Gas: High fuel cost, low investment, flexible peaker.
 function create_gas_generator()
     return Generator(
         "Gas",        # name
-        90.0,         # fuel_cost ($/MWh)
-        4.0,          # var_om_cost ($/MWh)
-        55000.0,      # inv_cost ($/MW/year)
-        12000.0,      # fixed_om_cost ($/MW/year)
+        60.0,         # fuel_cost ($/MWh)
+        8.0,          # var_om_cost ($/MWh)
+        70000.0,      # inv_cost ($/MW/year)
+        16000.0,      # fixed_om_cost ($/MW/year)
         1000.0,       # max_capacity (MW)
         0.2,          # min_stable_gen (fraction)
         1.0,          # ramp_rate (fraction/hour)
