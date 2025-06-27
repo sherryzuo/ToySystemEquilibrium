@@ -8,19 +8,36 @@ Executes all three optimization models with full system parameters.
 """
 
 using Revise
-using ToySystemQuad
+
+# Load the local ToySystemQuad module
+push!(LOAD_PATH, @__DIR__)
+include("src/ToySystemQuad.jl")
+using .ToySystemQuad
+using .ToySystemQuad: SystemParameters
 
 function main()
     println("Starting Complete ToySystemQuad Test System")
+    
+    # Configure system parameters
+    params = SystemParameters(
+        720,     # hours (30 days)
+        30,      # days  
+        1,       # N (number of generators per technology fleet)
+        42,      # random_seed
+        10000.0, # load_shed_penalty ($/MWh)
+        0.001    # load_shed_quad
+    )
+    
     println("This will run all three optimization models with:")
-    println("  - 720-hour horizon (30 days)")
-    println("  - Fleet-based thermal generation (2 generators per technology)")
+    println("  - $(params.hours)-hour horizon ($(params.days) days)")
+    println("  - Fleet-based thermal generation ($(params.N) generators per technology)")
     println("  - 5 stochastic scenarios for DLAC-i operations")
     println("  - Realistic wind forecast error modeling")
+    println("  - Random seed: $(params.random_seed)")
     println()
     
-    # Run the complete test system
-    results = run_complete_test_system(output_dir="results")
+    # Run the complete test system with configured parameters
+    results = run_complete_test_system(params=params, output_dir="results")
     
     if results["status"] == "success"
         println("\n✅ SUCCESS: All models completed successfully!")

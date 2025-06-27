@@ -18,22 +18,30 @@ export run_complete_test_system
 export compare_models_analysis
 
 """
-    run_complete_test_system(; output_dir="results")
+    run_complete_test_system(; params=nothing, output_dir="results")
 
 Run complete test system with all three optimization models:
 1. Capacity Expansion Model (CEM) 
 2. Perfect Foresight Operations (DLAC-p)
 3. DLAC-i Operations (rolling horizon)
 
+Args:
+- params: SystemParameters to use (if nothing, uses defaults)
+- output_dir: Directory to save results
+
 Saves detailed results and comparisons to CSV files.
 """
-function run_complete_test_system(; output_dir="results")
+function run_complete_test_system(; params=nothing, output_dir="results")
     println("🚀 Running Complete ToySystemQuad Test System")
     println(repeat("=", 60))
     
-    # Create complete system with profiles
-    generators, battery, profiles = create_complete_toy_system()
-    params = profiles.params
+    # Use provided parameters or defaults
+    if params === nothing
+        params = get_default_system_parameters()
+    end
+    
+    # Create complete system with specified profiles
+    generators, battery, profiles = create_complete_toy_system(params)
     
     println("System Configuration:")
     println("  Time horizon: $(params.hours) hours ($(params.days) days)")

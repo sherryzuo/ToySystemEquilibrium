@@ -139,7 +139,7 @@ function create_gas_generator()
         60.0,         # fuel_cost ($/MWh)
         8.0,          # var_om_cost ($/MWh)
         70000.0,      # inv_cost ($/MW/year)
-        16000.0,      # fixed_om_cost ($/MW/year)
+        12000.0,      # fixed_om_cost ($/MW/year)
         1000.0,       # max_capacity (MW)
         0.2,          # min_stable_gen (fraction)
         1.0,          # ramp_rate (fraction/hour)
@@ -237,12 +237,12 @@ function generate_system_profiles(params::SystemParameters=get_default_system_pa
 end
 
 """
-    create_complete_toy_system(params::SystemParameters=get_default_system_parameters())
+    create_complete_toy_system(params::SystemParameters)
 
 Create the complete toy system including technology parameters and all profiles.
 Returns generators, battery, and system profiles.
 """
-function create_complete_toy_system(params::SystemParameters=get_default_system_parameters())
+function create_complete_toy_system(params::SystemParameters)
     # Create technology components
     generators = [
         create_nuclear_generator(),
