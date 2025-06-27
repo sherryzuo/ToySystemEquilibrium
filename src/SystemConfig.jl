@@ -8,6 +8,7 @@ Defines technology parameters, system setup, and validation functions.
 module SystemConfig
 
 using ..ProfileGeneration
+using ..ProfileGeneration: SystemParameters
 
 export Generator, Battery, SystemParameters, SystemProfiles
 export get_default_system_parameters
@@ -44,14 +45,6 @@ struct Battery
     efficiency_charge::Float64  # p.u.
     efficiency_discharge::Float64 # p.u.
     duration::Float64          # hours (energy/power ratio)
-end
-
-struct SystemParameters
-    hours::Int              # Total simulation hours
-    days::Int               # Number of days
-    random_seed::Int        # For reproducibility
-    load_shed_penalty::Float64  # $/MWh penalty for unserved energy
-    load_shed_quad::Float64     # Quadratic load shed penalty coefficient
 end
 
 struct SystemProfiles

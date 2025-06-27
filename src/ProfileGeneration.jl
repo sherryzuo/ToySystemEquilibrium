@@ -396,13 +396,19 @@ function generate_scenarios(actual_demand, actual_wind, nuclear_availability, ga
         scenario_wind = generate_wind_forecast(actual_wind, params, scenario)
         
         # Nuclear availability scenarios - generate new fleet with different seed
-        nuclear_scenario_params = deepcopy(params)
-        nuclear_scenario_params.random_seed = params.random_seed + scenario * 100000
+        nuclear_scenario_params = SystemParameters(
+            params.hours, params.days, 
+            params.random_seed + scenario * 100000,
+            params.load_shed_penalty, params.load_shed_quad
+        )
         nuclear_fleet_mean, _ = generate_fleet_availability(nuclear_scenario_params, :nuclear, 5)
         
         # Gas availability scenarios - generate new fleet with different seed  
-        gas_scenario_params = deepcopy(params)
-        gas_scenario_params.random_seed = params.random_seed + scenario * 200000
+        gas_scenario_params = SystemParameters(
+            params.hours, params.days,
+            params.random_seed + scenario * 200000, 
+            params.load_shed_penalty, params.load_shed_quad
+        )
         gas_fleet_mean, _ = generate_fleet_availability(gas_scenario_params, :gas, 5)
         
         push!(demand_scenarios, scenario_demand)
@@ -463,8 +469,8 @@ function validate_profiles(actual_demand, actual_wind, nuclear_availability, gas
     
     @assert all(actual_demand .> 0) "Demand must be positive"
     @assert all(0 .<= actual_wind .<= 1) "Wind capacity factors must be in [0,1]"
-    @assert all(nuclear_availability .∈ Ref([0.0, 1.0])) "Nuclear availability must be 0 or 1"
-    @assert all(gas_availability .∈ Ref([0.0, 1.0])) "Gas availability must be 0 or 1"
+    @assert all(0 .<= nuclear_availability .<= 1) "Nuclear availability must be in [0,1]"
+    @assert all(0 .<= gas_availability .<= 1) "Gas availability must be in [0,1]"
     
     # Check availability statistics
     nuclear_avail_pct = mean(nuclear_availability) * 100
