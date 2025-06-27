@@ -11,8 +11,9 @@ using Random, Statistics
 using ..SystemConfig: SystemParameters, get_default_system_parameters
 
 export get_base_demand_profile, get_base_wind_profile
-export generate_demand_profile, generate_wind_profile
+export generate_demand_profile, generate_wind_profile, generate_wind_forecast
 export generate_nuclear_availability, generate_gas_availability
+export generate_fleet_availability, generate_single_nuclear_availability, generate_single_gas_availability
 export generate_scenarios, create_actual_and_scenarios
 export validate_profiles
 
@@ -116,16 +117,133 @@ function generate_wind_profile(params::SystemParameters)
 end
 
 """
+    generate_wind_forecast(actual_wind, params::SystemParameters, scenario_id::Int=1)
+
+Generate wind forecast profile with realistic forecast error patterns.
+Includes bias, temporal errors, persistence effects, and diurnal accuracy variations.
+"""
+function generate_wind_forecast(actual_wind, params::SystemParameters, scenario_id::Int=1)
+    Random.seed!(params.random_seed + scenario_id * 5000)
+    forecast_wind = Float64[]
+    
+    for t in 1:params.hours
+        hour_of_day = ((t-1) % 24) + 1
+        day_of_year = div(t-1, 24) + 1
+        
+        # Base forecast starts with actual
+        base_forecast = actual_wind[t]
+        
+        # Forecast bias - systematic tendency to over/under-predict
+        # More bias in extreme conditions
+        if base_forecast > 0.7
+            bias_factor = 0.95 + 0.1 * (scenario_id - 1) / 4  # High wind under-prediction bias
+        elseif base_forecast < 0.3
+            bias_factor = 1.05 - 0.1 * (scenario_id - 1) / 4  # Low wind over-prediction bias
+        else
+            bias_factor = 1.0
+        end
+        
+        # Temporal/ramp forecast errors - worse during transitions
+        prev_wind = t > 1 ? actual_wind[t-1] : actual_wind[t]
+        next_wind = t < params.hours ? actual_wind[t+1] : actual_wind[t]
+        ramp_magnitude = abs(next_wind - prev_wind)
+        ramp_error_factor = 1.0 + 0.15 * ramp_magnitude * randn()
+        
+        # Diurnal accuracy patterns - worse during certain hours
+        diurnal_accuracy = if hour_of_day in 6:9 || hour_of_day in 17:20
+            0.85  # Worse during transition periods
+        else
+            0.95  # Better during stable periods
+        end
+        
+        # Persistence bias - forecasts are "stickier" than reality
+        if t > 1
+            persistence_factor = 0.1
+            forecast_wind_raw = (1 - persistence_factor) * base_forecast + 
+                               persistence_factor * forecast_wind[t-1]
+        else
+            forecast_wind_raw = base_forecast
+        end
+        
+        # Weather pattern forecast skill variation
+        weather_cycle_day = day_of_year % 7
+        weather_skill = if weather_cycle_day in [2, 5]  # Worse skill on certain weather patterns
+            0.8
+        else
+            0.9
+        end
+        
+        # Combine all error sources
+        forecast_error = (bias_factor * ramp_error_factor - 1.0) * weather_skill * diurnal_accuracy
+        additive_noise = 0.08 * randn()  # Random noise
+        
+        forecast_value = forecast_wind_raw + forecast_error + additive_noise
+        
+        # Constrain to [0, 1] range
+        forecast_value = max(min(forecast_value, 0.98), 0.02)
+        
+        push!(forecast_wind, forecast_value)
+    end
+    
+    return forecast_wind
+end
+
+"""
     generate_nuclear_availability(params::SystemParameters)
 
-Generate nuclear availability profile including planned and forced outages.
+Generate nuclear availability profile for a 5-generator fleet.
+Returns the mean availability across the fleet.
 """
 function generate_nuclear_availability(params::SystemParameters)
-    Random.seed!(params.random_seed)
+    fleet_mean, _ = generate_fleet_availability(params, :nuclear, 5)
+    return fleet_mean
+end
+
+"""
+    generate_gas_availability(params::SystemParameters)
+
+Generate gas availability profile for a 5-generator fleet.
+Returns the mean availability across the fleet.
+"""
+function generate_gas_availability(params::SystemParameters)
+    fleet_mean, _ = generate_fleet_availability(params, :gas, 5)
+    return fleet_mean
+end
+
+"""
+    ensure_24_hours(profile)
+
+Utility function to ensure a daily profile has exactly 24 hours.
+"""
+function ensure_24_hours(profile)
+    if length(profile) < 24
+        # Pad with last value
+        while length(profile) < 24
+            push!(profile, profile[end])
+        end
+    elseif length(profile) > 24
+        # Trim to 24 hours
+        profile = profile[1:24]
+    end
+    return profile
+end
+
+# =============================================================================
+# FLEET GENERATION HELPER FUNCTIONS
+# =============================================================================
+
+"""
+    generate_single_nuclear_availability(params::SystemParameters, generator_id::Int)
+
+Generate nuclear availability profile for a single generator with independent outage patterns.
+"""
+function generate_single_nuclear_availability(params::SystemParameters, generator_id::Int)
+    Random.seed!(params.random_seed + generator_id * 1000)
     nuclear_availability = Float64[]
     
-    # Planned outage periods (maintenance every ~45 days for 3-5 days)
-    planned_outage_periods = [12:15, 58:62, 104:107]
+    # Planned outage periods vary by generator (staggered maintenance)
+    base_outage_days = [12:15, 58:62, 104:107]
+    planned_outage_periods = [period .+ (generator_id - 1) * 7 for period in base_outage_days]
     
     for day in 1:params.days
         nuclear_daily_avail = Float64[]
@@ -136,12 +254,12 @@ function generate_nuclear_availability(params::SystemParameters)
             # Check for planned maintenance
             planned_outage = any(day in period for period in planned_outage_periods)
             
-            # Random forced outages (0.2% per hour probability)
-            Random.seed!(hour_of_year + 1000)  # Deterministic but pseudo-random
+            # Random forced outages (0.2% per hour probability per generator)
+            Random.seed!(hour_of_year + generator_id * 10000)
             forced_outage = rand() < 0.002
             
             # Handle forced outage duration
-            if forced_outage && hour <= 18  # Don't start outages too late
+            if forced_outage && hour <= 18
                 outage_duration = 6 + rand(1:18)  # 6-24 hours
                 for out_hour in hour:min(24, hour + outage_duration - 1)
                     if out_hour <= 24
@@ -165,12 +283,12 @@ function generate_nuclear_availability(params::SystemParameters)
 end
 
 """
-    generate_gas_availability(params::SystemParameters)
+    generate_single_gas_availability(params::SystemParameters, generator_id::Int)
 
-Generate gas availability profile with frequent but shorter outages.
+Generate gas availability profile for a single generator with independent outage patterns.
 """
-function generate_gas_availability(params::SystemParameters)
-    Random.seed!(params.random_seed)
+function generate_single_gas_availability(params::SystemParameters, generator_id::Int)
+    Random.seed!(params.random_seed + generator_id * 2000)
     gas_availability = Float64[]
     
     for day in 1:params.days
@@ -180,8 +298,8 @@ function generate_gas_availability(params::SystemParameters)
         while hour <= 24
             hour_of_year = (day-1)*24 + hour
             
-            # Gas units have more frequent but shorter outages (2% per hour)
-            Random.seed!(hour_of_year + 2000)
+            # Gas units have more frequent but shorter outages (2% per hour per generator)
+            Random.seed!(hour_of_year + generator_id * 20000)
             forced_outage = rand() < 0.02
             
             if forced_outage && hour <= 22
@@ -207,21 +325,29 @@ function generate_gas_availability(params::SystemParameters)
 end
 
 """
-    ensure_24_hours(profile)
+    generate_fleet_availability(params::SystemParameters, unit_type::Symbol, n_generators::Int=5)
 
-Utility function to ensure a daily profile has exactly 24 hours.
+Generate availability profiles for a fleet of generators and return the mean availability.
+Returns both individual generator paths and the fleet mean.
 """
-function ensure_24_hours(profile)
-    if length(profile) < 24
-        # Pad with last value
-        while length(profile) < 24
-            push!(profile, profile[end])
+function generate_fleet_availability(params::SystemParameters, unit_type::Symbol, n_generators::Int=5)
+    generator_paths = []
+    
+    for gen_id in 1:n_generators
+        if unit_type == :nuclear
+            path = generate_single_nuclear_availability(params, gen_id)
+        elseif unit_type == :gas
+            path = generate_single_gas_availability(params, gen_id)
+        else
+            error("Unknown unit type: $unit_type")
         end
-    elseif length(profile) > 24
-        # Trim to 24 hours
-        profile = profile[1:24]
+        push!(generator_paths, path)
     end
-    return profile
+    
+    # Calculate fleet mean availability
+    fleet_mean = [mean([generator_paths[g][t] for g in 1:n_generators]) for t in 1:params.hours]
+    
+    return fleet_mean, generator_paths
 end
 
 # =============================================================================
@@ -230,12 +356,13 @@ end
 
 """
     generate_scenarios(actual_demand, actual_wind, nuclear_availability, gas_availability, 
-                      params::SystemParameters; n_scenarios=3)
+                      params::SystemParameters; n_scenarios=5)
 
-Generate stochastic scenarios around the actual profiles for DLAC-i operations.
+Generate 5 stochastic scenarios with fleet-based thermal generation for DLAC-i operations.
+Each scenario uses independent fleet paths and realistic wind forecasts.
 """
 function generate_scenarios(actual_demand, actual_wind, nuclear_availability, gas_availability, 
-                           params::SystemParameters; n_scenarios=3)
+                           params::SystemParameters; n_scenarios=5)
     Random.seed!(params.random_seed)
     
     demand_scenarios = []
@@ -243,53 +370,37 @@ function generate_scenarios(actual_demand, actual_wind, nuclear_availability, ga
     nuclear_availability_scenarios = []
     gas_availability_scenarios = []
     
-    # Scenario factors for systematic variations
-    demand_factors = n_scenarios == 3 ? [0.85, 1.0, 1.15] : range(0.8, 1.2, length=n_scenarios)
-    wind_factors = n_scenarios == 3 ? [1.2, 1.0, 0.8] : range(1.3, 0.7, length=n_scenarios)
+    # Demand scenario factors (5 scenarios with diverse range)
+    demand_factors = [0.8, 0.9, 1.0, 1.1, 1.2]
     
     for scenario in 1:n_scenarios
+        # Demand scenarios with systematic bias and noise
         scenario_demand = Float64[]
-        scenario_wind = Float64[]
-        scenario_nuclear_avail = Float64[]
-        scenario_gas_avail = Float64[]
-        
         for t in 1:params.hours
-            # Demand scenarios with systematic bias and noise
             demand_factor = demand_factors[scenario]
             demand_noise = 1.0 + 0.06 * randn()
             demand_value = max(actual_demand[t] * demand_factor * demand_noise, 
                               0.3 * actual_demand[t])
-            
-            # Wind scenarios with systematic bias and noise
-            wind_factor = wind_factors[scenario]
-            wind_noise = 1.0 + 0.12 * randn()
-            wind_value = max(min(actual_wind[t] * wind_factor * wind_noise, 0.98), 0.02)
-            
-            # Outage scenarios with different patterns per scenario
-            Random.seed!(t + scenario * 10000)
-            
-            # Nuclear outages vary by scenario (more outages in higher scenarios)
-            nuclear_factor = nuclear_availability[t]
-            if nuclear_availability[t] > 0 && rand() < 0.002 * scenario
-                nuclear_factor = 0.0
-            end
-            
-            # Gas outages vary by scenario
-            gas_factor = gas_availability[t]
-            if gas_availability[t] > 0 && rand() < 0.003 * scenario
-                gas_factor = max(0.3, gas_availability[t] - 0.4)
-            end
-            
             push!(scenario_demand, demand_value)
-            push!(scenario_wind, wind_value)
-            push!(scenario_nuclear_avail, nuclear_factor)
-            push!(scenario_gas_avail, gas_factor)
         end
+        
+        # Wind scenarios using forecast error patterns
+        scenario_wind = generate_wind_forecast(actual_wind, params, scenario)
+        
+        # Nuclear availability scenarios - generate new fleet with different seed
+        nuclear_scenario_params = deepcopy(params)
+        nuclear_scenario_params.random_seed = params.random_seed + scenario * 100000
+        nuclear_fleet_mean, _ = generate_fleet_availability(nuclear_scenario_params, :nuclear, 5)
+        
+        # Gas availability scenarios - generate new fleet with different seed  
+        gas_scenario_params = deepcopy(params)
+        gas_scenario_params.random_seed = params.random_seed + scenario * 200000
+        gas_fleet_mean, _ = generate_fleet_availability(gas_scenario_params, :gas, 5)
         
         push!(demand_scenarios, scenario_demand)
         push!(wind_scenarios, scenario_wind)
-        push!(nuclear_availability_scenarios, scenario_nuclear_avail)
-        push!(gas_availability_scenarios, scenario_gas_avail)
+        push!(nuclear_availability_scenarios, nuclear_fleet_mean)
+        push!(gas_availability_scenarios, gas_fleet_mean)
     end
     
     return demand_scenarios, wind_scenarios, nuclear_availability_scenarios, gas_availability_scenarios
