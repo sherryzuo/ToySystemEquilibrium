@@ -12,7 +12,11 @@ using ToySystemQuad
 
 function main()
     println("Starting Complete ToySystemQuad Test System")
-    println("This will run all three optimization models with full 720-hour horizon")
+    println("This will run all three optimization models with:")
+    println("  - 720-hour horizon (30 days)")
+    println("  - Fleet-based thermal generation (5 generators per technology)")
+    println("  - 5 stochastic scenarios for DLAC-i operations")
+    println("  - Realistic wind forecast error modeling")
     println()
     
     # Run the complete test system
@@ -32,7 +36,7 @@ function main()
         println("- three_model_comprehensive_comparison.csv")
         println("- pf_vs_dlac_i_comprehensive_comparison.csv")
         println("- comprehensive_forecast_quality_analysis.csv, comprehensive_price_analysis.csv")
-        println("- demand_wind_profiles.csv, demand_wind_outage_profiles.csv")
+        println("- demand_wind_profiles.csv (actuals), demand_wind_outage_profiles.csv (5 scenarios)")
         println("- price_statistics_summary.csv")
         println("\nPlots created in results/plots/:")
         println("- Individual price time series: cem_price_time_series.png, pf_price_time_series.png, dlac_i_price_time_series.png")

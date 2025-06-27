@@ -7,16 +7,11 @@ Runs all three optimization models with full system parameters and saves detaile
 
 module TestRunner
 
-# Include all modules
-include("SystemConfig.jl")
-include("ProfileGeneration.jl") 
-include("OptimizationModels.jl")
-include("PlottingModule.jl")
-
-using .SystemConfig
-using .ProfileGeneration
-using .OptimizationModels
-using .PlottingModule
+# Use modules from parent
+using ..SystemConfig
+using ..ProfileGeneration
+using ..OptimizationModels
+using ..PlottingModule
 using CSV, DataFrames, Plots, Statistics
 
 export run_complete_test_system

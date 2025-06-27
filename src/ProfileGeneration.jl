@@ -8,7 +8,15 @@ Handles demand, wind, and outage profile generation with scenarios.
 module ProfileGeneration
 
 using Random, Statistics
-using ..SystemConfig: SystemParameters, get_default_system_parameters
+
+# Define SystemParameters locally to avoid circular dependency
+struct SystemParameters
+    hours::Int              # Total simulation hours
+    days::Int               # Number of days
+    random_seed::Int        # For reproducibility
+    load_shed_penalty::Float64  # $/MWh penalty for unserved energy
+    load_shed_quad::Float64     # Quadratic load shed penalty coefficient
+end
 
 export get_base_demand_profile, get_base_wind_profile
 export generate_demand_profile, generate_wind_profile, generate_wind_forecast
@@ -414,8 +422,14 @@ Maintains compatibility with existing code.
 """
 function create_actual_and_scenarios(params=nothing)
     if params === nothing
-        # Import get_default_system_parameters from SystemConfig
-        params = get_default_system_parameters()
+        # Default system parameters
+        params = SystemParameters(
+            720,    # hours (30 days)
+            30,     # days
+            42,     # random_seed
+            10000.0, # load_shed_penalty
+            0.001   # load_shed_quad
+        )
     end
     
     # Generate actual profiles
