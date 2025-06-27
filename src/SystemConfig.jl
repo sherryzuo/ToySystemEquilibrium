@@ -7,10 +7,13 @@ Defines technology parameters, system setup, and validation functions.
 
 module SystemConfig
 
-export Generator, Battery, SystemParameters
+using ..ProfileGeneration
+
+export Generator, Battery, SystemParameters, SystemProfiles
 export get_default_system_parameters
 export create_nuclear_generator, create_wind_generator, create_gas_generator
-export create_battery_storage, create_toy_system
+export create_battery_storage
+export generate_system_profiles, create_complete_toy_system
 export validate_system_configuration
 
 # =============================================================================
@@ -49,6 +52,24 @@ struct SystemParameters
     random_seed::Int        # For reproducibility
     load_shed_penalty::Float64  # $/MWh penalty for unserved energy
     load_shed_quad::Float64     # Quadratic load shed penalty coefficient
+end
+
+struct SystemProfiles
+    # Actual profiles (realizations)
+    actual_demand::Vector{Float64}
+    actual_wind::Vector{Float64}
+    actual_nuclear_availability::Vector{Float64}
+    actual_gas_availability::Vector{Float64}
+    
+    # Forecast scenarios (for DLAC-i)
+    demand_scenarios::Vector{Vector{Float64}}
+    wind_scenarios::Vector{Vector{Float64}}
+    nuclear_availability_scenarios::Vector{Vector{Float64}}
+    gas_availability_scenarios::Vector{Vector{Float64}}
+    
+    # Metadata
+    n_scenarios::Int
+    params::SystemParameters
 end
 
 # =============================================================================
@@ -154,23 +175,6 @@ function create_battery_storage()
     )
 end
 
-"""
-    create_toy_system()
-
-Create the complete 4-technology system with default parameters.
-Returns generators array and battery storage.
-"""
-function create_toy_system()
-    generators = [
-        create_nuclear_generator(),
-        create_wind_generator(), 
-        create_gas_generator()
-    ]
-    
-    battery = create_battery_storage()
-    
-    return generators, battery
-end
 
 """
     validate_system_configuration(generators, battery, params)
@@ -202,6 +206,71 @@ function validate_system_configuration(generators, battery, params)
     
     println("✓ System configuration validated successfully")
     return true
+end
+
+"""
+    generate_system_profiles(params::SystemParameters=get_default_system_parameters())
+
+Generate both actual profiles and forecast scenarios for the system.
+This centralizes all profile generation in SystemConfig rather than calling it repeatedly.
+"""
+function generate_system_profiles(params::SystemParameters=get_default_system_parameters())
+    # Generate actual profiles
+    actual_demand = ProfileGeneration.generate_demand_profile(params)
+    actual_wind = ProfileGeneration.generate_wind_profile(params)
+    actual_nuclear_availability = ProfileGeneration.generate_nuclear_availability(params)
+    actual_gas_availability = ProfileGeneration.generate_gas_availability(params) 
+    
+    # Generate forecast scenarios (5 scenarios for DLAC-i)
+    demand_scenarios, wind_scenarios, nuclear_availability_scenarios, gas_availability_scenarios = 
+        ProfileGeneration.generate_scenarios(
+            actual_demand, actual_wind, actual_nuclear_availability, actual_gas_availability, params; 
+            n_scenarios=5
+        )
+    
+    return SystemProfiles(
+        actual_demand,
+        actual_wind,
+        actual_nuclear_availability,
+        actual_gas_availability,
+        demand_scenarios,
+        wind_scenarios,
+        nuclear_availability_scenarios,
+        gas_availability_scenarios,
+        5,  # n_scenarios
+        params
+    )
+end
+
+"""
+    create_complete_toy_system(params::SystemParameters=get_default_system_parameters())
+
+Create the complete toy system including technology parameters and all profiles.
+Returns generators, battery, and system profiles.
+"""
+function create_complete_toy_system(params::SystemParameters=get_default_system_parameters())
+    # Create technology components
+    generators = [
+        create_nuclear_generator(),
+        create_wind_generator(), 
+        create_gas_generator()
+    ]
+    battery = create_battery_storage()
+    
+    # Generate all profiles
+    profiles = generate_system_profiles(params)
+    
+    # Validate everything
+    validate_system_configuration(generators, battery, params)
+    ProfileGeneration.validate_profiles(
+        profiles.actual_demand, 
+        profiles.actual_wind, 
+        profiles.actual_nuclear_availability, 
+        profiles.actual_gas_availability, 
+        params
+    )
+    
+    return generators, battery, profiles
 end
 
 end # module SystemConfig

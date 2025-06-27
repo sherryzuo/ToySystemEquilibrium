@@ -36,9 +36,9 @@ function run_complete_test_system(; output_dir="results")
     println("🚀 Running Complete ToySystemQuad Test System")
     println(repeat("=", 60))
     
-    # Create system with full parameters (720 hours = 30 days)
-    generators, battery = create_toy_system()
-    params = get_default_system_parameters()
+    # Create complete system with profiles
+    generators, battery, profiles = create_complete_toy_system()
+    params = profiles.params
     
     println("System Configuration:")
     println("  Time horizon: $(params.hours) hours ($(params.days) days)")
@@ -48,27 +48,15 @@ function run_complete_test_system(; output_dir="results")
     end
     println("    4. $(battery.name): Power \$$(battery.inv_cost_power)/MW/yr, Energy \$$(battery.inv_cost_energy)/MWh/yr")
     
-    # Validate system
-    validate_system_configuration(generators, battery, params)
-    
-    # Generate profiles and validate
-    println("\n📊 Generating system profiles...")
-    actual_demand, actual_wind, nuclear_availability, gas_availability,
-    demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios = 
-        create_actual_and_scenarios(params)
-    
-    validate_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability, params)
+    println("\n📊 System profiles generated with $(profiles.n_scenarios) scenarios")
     
     # Save profiles to CSV
-    save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
-                        demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
-                        output_dir)
+    save_system_profiles(profiles, output_dir)
     
     # STEP 1: Capacity Expansion Model
     println("\n" * repeat("=", 25) * " CAPACITY EXPANSION MODEL " * repeat("=", 25))
     println("TESTING")
-    cem_result = solve_capacity_expansion_model(generators, battery; 
-                                               params=params, 
+    cem_result = solve_capacity_expansion_model(generators, battery, profiles; 
                                                output_dir=output_dir)
     
     if cem_result["status"] != "optimal"
@@ -94,8 +82,8 @@ function run_complete_test_system(; output_dir="results")
     pf_result = solve_perfect_foresight_operations(generators, battery, 
                                                   optimal_capacities,
                                                   optimal_battery_power, 
-                                                  optimal_battery_energy;
-                                                  params=params,
+                                                  optimal_battery_energy,
+                                                  profiles;
                                                   output_dir=output_dir)
     
     if pf_result["status"] != "optimal"
@@ -111,9 +99,9 @@ function run_complete_test_system(; output_dir="results")
     dlac_result = solve_dlac_i_operations(generators, battery,
                                          optimal_capacities,
                                          optimal_battery_power,
-                                         optimal_battery_energy;
+                                         optimal_battery_energy,
+                                         profiles;
                                          lookahead_hours=24,
-                                         params=params,
                                          output_dir=output_dir)
     
     if dlac_result["status"] != "optimal"
@@ -154,8 +142,7 @@ function run_complete_test_system(; output_dir="results")
     # STEP 6: Generate Comprehensive Plots
     println("\n" * repeat("=", 25) * " GENERATING PLOTS " * repeat("=", 28))
     
-    generate_all_plots(cem_result, pf_result, dlac_result, 
-                      actual_demand, actual_wind, nuclear_availability, gas_availability,
+    generate_all_plots(cem_result, pf_result, dlac_result, profiles,
                       generators, battery, optimal_capacities, optimal_battery_power, output_dir)
     
     println("\nComplete test system finished successfully!")
@@ -171,37 +158,33 @@ function run_complete_test_system(; output_dir="results")
 end
 
 """
-    save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
-                        demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
-                        output_dir)
+    save_system_profiles(profiles::SystemProfiles, output_dir)
 
 Save system profiles and forecast scenarios to CSV files.
 """
-function save_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability,
-                             demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
-                             output_dir)
+function save_system_profiles(profiles::SystemProfiles, output_dir)
     mkpath(output_dir)
     
-    T = length(actual_demand)
+    T = length(profiles.actual_demand)
     
     # Save actual profiles
     profiles_df = DataFrame(
         Hour = 1:T,
-        Demand_MW = actual_demand,
-        Wind_CF = actual_wind,
-        Nuclear_Available = nuclear_availability,
-        Gas_Available = gas_availability
+        Demand_MW = profiles.actual_demand,
+        Wind_CF = profiles.actual_wind,
+        Nuclear_Available = profiles.actual_nuclear_availability,
+        Gas_Available = profiles.actual_gas_availability
     )
     CSV.write(joinpath(output_dir, "demand_wind_profiles.csv"), profiles_df)
     
     # Save scenarios for DLAC-i analysis
     scenarios_df = DataFrame(
-        Hour = repeat(1:T, length(demand_scenarios)),
-        Scenario = vcat([fill(s, T) for s in 1:length(demand_scenarios)]...),
-        Demand_MW = vcat(demand_scenarios...),
-        Wind_CF = vcat(wind_scenarios...),
-        Nuclear_Available = vcat(nuclear_avail_scenarios...),
-        Gas_Available = vcat(gas_avail_scenarios...)
+        Hour = repeat(1:T, profiles.n_scenarios),
+        Scenario = vcat([fill(s, T) for s in 1:profiles.n_scenarios]...),
+        Demand_MW = vcat(profiles.demand_scenarios...),
+        Wind_CF = vcat(profiles.wind_scenarios...),
+        Nuclear_Available = vcat(profiles.nuclear_availability_scenarios...),
+        Gas_Available = vcat(profiles.gas_availability_scenarios...)
     )
     CSV.write(joinpath(output_dir, "demand_wind_outage_profiles.csv"), scenarios_df)
     

@@ -10,8 +10,7 @@ Three core optimization models for ToySystemQuad.jl:
 module OptimizationModels
 
 using JuMP, Gurobi, LinearAlgebra, CSV, DataFrames, Statistics
-using ..SystemConfig: Generator, Battery, SystemParameters, get_default_system_parameters
-using ..ProfileGeneration: create_actual_and_scenarios
+using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles, get_default_system_parameters
 
 export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations
 export save_operational_results, calculate_profits_and_save, compute_pmr
@@ -35,14 +34,14 @@ Subject to:
 - Storage constraints: SOC dynamics, power limits
 - Capacity bounds: y_n ≥ 0
 """
-function solve_capacity_expansion_model(generators, battery; params=nothing, output_dir="results")
-    if params === nothing
-        params = get_default_system_parameters()
-    end
+function solve_capacity_expansion_model(generators, battery, profiles::SystemProfiles; output_dir="results")
+    params = profiles.params
     
     # Get actual profiles (deterministic for CEM)
-    actual_demand, actual_wind, nuclear_availability, gas_availability, 
-    _, _, _, _ = create_actual_and_scenarios(params)
+    actual_demand = profiles.actual_demand
+    actual_wind = profiles.actual_wind
+    nuclear_availability = profiles.actual_nuclear_availability
+    gas_availability = profiles.actual_gas_availability
     
     T = params.hours
     G = length(generators)
@@ -173,15 +172,15 @@ Subject to:
 - Generation limits: p_n,t ≤ y_n * a_n,t  ∀n,t  (capacities y_n are FIXED)
 - Storage constraints: SOC dynamics, power limits
 """
-function solve_perfect_foresight_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap;
-                                           params=nothing, output_dir="results")
-    if params === nothing
-        params = get_default_system_parameters()
-    end
+function solve_perfect_foresight_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap,
+                                           profiles::SystemProfiles; output_dir="results")
+    params = profiles.params
     
     # Get the same profiles as used in capacity expansion
-    actual_demand, actual_wind, nuclear_availability, gas_availability, 
-    _, _, _, _ = create_actual_and_scenarios(params)
+    actual_demand = profiles.actual_demand
+    actual_wind = profiles.actual_wind
+    nuclear_availability = profiles.actual_nuclear_availability
+    gas_availability = profiles.actual_gas_availability
     
     T = params.hours
     G = length(generators)
@@ -300,15 +299,19 @@ Subject to:
 
 Where d_t,t' and ã_n,t,t' are actual values for t'=t, mean forecasts for t'>t.
 """
-function solve_dlac_i_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap;
-                                 lookahead_hours=24, params=nothing, output_dir="results")
-    if params === nothing
-        params = get_default_system_parameters()
-    end
+function solve_dlac_i_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap,
+                                 profiles::SystemProfiles; lookahead_hours=24, output_dir="results")
+    params = profiles.params
     
     # Get actual profiles and scenarios for forecasting
-    actual_demand, actual_wind, nuclear_availability, gas_availability,
-    demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios = create_actual_and_scenarios(params)
+    actual_demand = profiles.actual_demand
+    actual_wind = profiles.actual_wind
+    nuclear_availability = profiles.actual_nuclear_availability
+    gas_availability = profiles.actual_gas_availability
+    demand_scenarios = profiles.demand_scenarios
+    wind_scenarios = profiles.wind_scenarios
+    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
+    gas_avail_scenarios = profiles.gas_availability_scenarios
     
     T = params.hours
     G = length(generators)

@@ -8,7 +8,7 @@ Handles price analysis, generation stacks, and model comparisons.
 module PlottingModule
 
 using Plots, Statistics, CSV, DataFrames
-using ..SystemConfig: Generator, Battery
+using ..SystemConfig: Generator, Battery, SystemProfiles
 
 export plot_price_time_series, plot_price_duration_curves, plot_combined_price_analysis
 export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison
@@ -203,9 +203,41 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
 end
 
 """
+    plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
+
+Plot system demand and availability profiles from SystemProfiles struct.
+"""
+function plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
+    T = length(profiles.actual_demand)
+    hours = 1:T
+    
+    # Create subplots
+    p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
+              lw=2, color=:blue, legend=false)
+    
+    p2 = plot(hours, profiles.actual_wind, title="Wind Capacity Factor", xlabel="Hour", ylabel="Capacity Factor",
+              lw=2, color=:green, legend=false, ylims=(0, 1))
+    
+    p3 = plot(hours, profiles.actual_nuclear_availability, title="Nuclear Availability", xlabel="Hour", ylabel="Available",
+              lw=2, color=:red, legend=false, ylims=(0, 1.1))
+    
+    p4 = plot(hours, profiles.actual_gas_availability, title="Gas Availability", xlabel="Hour", ylabel="Available",
+              lw=2, color=:orange, legend=false, ylims=(0, 1.1))
+    
+    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(1200, 800))
+    
+    if save_path !== nothing
+        savefig(combined_plot, save_path)
+        println("System profiles plot saved: $save_path")
+    end
+    
+    return combined_plot
+end
+
+"""
     plot_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability; save_path=nothing)
 
-Plot system demand and availability profiles.
+Plot system demand and availability profiles (legacy method for backwards compatibility).
 """
 function plot_system_profiles(actual_demand, actual_wind, nuclear_availability, gas_availability; save_path=nothing)
     T = length(actual_demand)
@@ -302,11 +334,86 @@ function save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
 end
 
 """
-    generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind, 
-                      nuclear_availability, gas_availability, generators, battery, 
+    generate_all_plots(cem_result, pf_result, dlac_result, profiles::SystemProfiles,
+                      generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+
+Generate all comprehensive plots for the system analysis using SystemProfiles.
+"""
+function generate_all_plots(cem_result, pf_result, dlac_result, profiles::SystemProfiles,
+                           generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+    plots_dir = joinpath(output_dir, "plots")
+    mkpath(plots_dir)
+    
+    try
+        # Extract prices
+        cem_prices = cem_result["prices"]
+        pf_prices = pf_result["prices"]
+        dlac_prices = dlac_result["prices"]
+        
+        # Individual price time series
+        plot_price_time_series(cem_prices, "Capacity Expansion"; 
+                              save_path=joinpath(plots_dir, "cem_price_time_series.png"))
+        plot_price_time_series(pf_prices, "Perfect Foresight"; 
+                              save_path=joinpath(plots_dir, "pf_price_time_series.png"))
+        plot_price_time_series(dlac_prices, "DLAC-i"; 
+                              save_path=joinpath(plots_dir, "dlac_i_price_time_series.png"))
+        
+        # Price duration curves (all models)
+        price_results = [
+            ("Capacity Expansion", cem_prices),
+            ("Perfect Foresight", pf_prices),
+            ("DLAC-i", dlac_prices)
+        ]
+        plot_price_duration_curves(price_results; 
+                                  save_path=joinpath(plots_dir, "price_duration_curves.png"))
+        
+        # Combined comprehensive price analysis
+        plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; 
+                                    save_path=joinpath(plots_dir, "comprehensive_price_analysis.png"))
+        
+        # Generation stacks
+        generation_results = [
+            ("Capacity Expansion", cem_result["generation"]),
+            ("Perfect Foresight", pf_result["generation"]),
+            ("DLAC-i", dlac_result["generation"])
+        ]
+        
+        battery_results = Dict(
+            "Capacity Expansion" => cem_result["battery_discharge"],
+            "Perfect Foresight" => pf_result["battery_discharge"],
+            "DLAC-i" => dlac_result["battery_discharge"]
+        )
+        
+        plot_generation_stacks(generation_results, battery_results, profiles.actual_demand, generators;
+                              save_path=joinpath(plots_dir, "generation_stacks.png"))
+        
+        # System profiles
+        plot_system_profiles(profiles; save_path=joinpath(plots_dir, "system_profiles.png"))
+        
+        # Capacity comparison
+        plot_capacity_comparison(generators, battery, optimal_capacities, optimal_battery_power;
+                                save_path=joinpath(plots_dir, "capacity_comparison.png"))
+        
+        # Save price analysis to CSV
+        save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
+        
+        println("All plots generated successfully in: $plots_dir")
+        
+        return true
+        
+    catch e
+        println("Plot generation failed (likely missing Plots.jl): $e")
+        println("Results are still available in CSV files")
+        return false
+    end
+end
+
+"""
+    generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
+                      nuclear_availability, gas_availability, generators, battery,
                       optimal_capacities, optimal_battery_power, output_dir)
 
-Generate all comprehensive plots for the system analysis.
+Generate all comprehensive plots (legacy method for backwards compatibility).
 """
 function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
                            nuclear_availability, gas_availability, generators, battery,
