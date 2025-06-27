@@ -3,6 +3,11 @@ ToySystemQuad.jl
 
 A modular capacity expansion and operations modeling framework for power system analysis.
 
+# Development tip:
+# For live code reloading, use Revise.jl and load this module with:
+#   using Revise; Revise.includet("src/ToySystemQuad.jl")
+# This will automatically track changes in this file and all included submodules.
+
 This package implements three complementary optimization models:
 1. Capacity Expansion Model (CEM) - Joint investment and operations optimization
 2. Perfect Foresight Operations (DLAC-p) - One-shot operations with perfect information  

@@ -17,7 +17,7 @@ using .SystemConfig
 using .ProfileGeneration
 using .OptimizationModels
 using .PlottingModule
-using CSV, DataFrames, Plots
+using CSV, DataFrames, Plots, Statistics
 
 export run_complete_test_system
 export compare_models_analysis
@@ -34,7 +34,7 @@ Saves detailed results and comparisons to CSV files.
 """
 function run_complete_test_system(; output_dir="results")
     println("🚀 Running Complete ToySystemQuad Test System")
-    println("=" ^ 60)
+    println(repeat("=", 60))
     
     # Create system with full parameters (720 hours = 30 days)
     generators, battery = create_toy_system()
@@ -65,8 +65,8 @@ function run_complete_test_system(; output_dir="results")
                         output_dir)
     
     # STEP 1: Capacity Expansion Model
-    println("\n" * "=" ^ 25 * " CAPACITY EXPANSION MODEL " * "=" ^ 25)
-    
+    println("\n" * repeat("=", 25) * " CAPACITY EXPANSION MODEL " * repeat("=", 25))
+    println("TESTING")
     cem_result = solve_capacity_expansion_model(generators, battery; 
                                                params=params, 
                                                output_dir=output_dir)
@@ -89,7 +89,7 @@ function run_complete_test_system(; output_dir="results")
                                "capacity_expansion", output_dir)
     
     # STEP 2: Perfect Foresight Operations
-    println("\n" * "=" * 25 * " PERFECT FORESIGHT OPERATIONS " * "=" * 21)
+    println("\n" * repeat("=", 25) * " PERFECT FORESIGHT OPERATIONS " * repeat("=", 21))
     
     pf_result = solve_perfect_foresight_operations(generators, battery, 
                                                   optimal_capacities,
@@ -106,7 +106,7 @@ function run_complete_test_system(; output_dir="results")
     println("✅ Perfect Foresight Operations solved successfully!")
     
     # STEP 3: DLAC-i Operations
-    println("\n" * "=" * 25 * " DLAC-I OPERATIONS " * "=" * 27)
+    println("\n" * repeat("=", 25) * " DLAC-I OPERATIONS " * repeat("=", 27))
     
     dlac_result = solve_dlac_i_operations(generators, battery,
                                          optimal_capacities,
@@ -124,7 +124,7 @@ function run_complete_test_system(; output_dir="results")
     println("✅ DLAC-i Operations solved successfully!")
     
     # STEP 4: Profit Analysis and PMR Calculation
-    println("\n" * "=" * 25 * " PROFIT ANALYSIS " * "=" * 29)
+    println("\n" * repeat("=", 25) * " PROFIT ANALYSIS " * repeat("=", 29))
     
     pf_profits = calculate_profits_and_save(generators, battery, pf_result,
                                            optimal_capacities, optimal_battery_power, optimal_battery_energy,
@@ -144,7 +144,7 @@ function run_complete_test_system(; output_dir="results")
     println("DLAC-i PMRs (%): $(round.(dlac_pmr, digits=2))")
     
     # STEP 5: Comprehensive Model Comparison
-    println("\n" * "=" * 25 * " MODEL COMPARISON " * "=" * 28)
+    println("\n" * repeat("=", 25) * " MODEL COMPARISON " * repeat("=", 28))
     
     comparison_results = compare_models_analysis(cem_result, pf_result, dlac_result, 
                                                generators, battery, optimal_capacities,
@@ -152,7 +152,7 @@ function run_complete_test_system(; output_dir="results")
                                                output_dir)
     
     # STEP 6: Generate Comprehensive Plots
-    println("\n" * "=" * 25 * " GENERATING PLOTS " * "=" * 28)
+    println("\n" * repeat("=", 25) * " GENERATING PLOTS " * repeat("=", 28))
     
     generate_all_plots(cem_result, pf_result, dlac_result, 
                       actual_demand, actual_wind, nuclear_availability, gas_availability,

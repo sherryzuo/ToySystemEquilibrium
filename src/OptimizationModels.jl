@@ -361,7 +361,7 @@ function solve_dlac_i_operations(generators, battery, capacities, battery_power_
         @objective(model, Min, 
             sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * p̃[g,τ] for g in 1:G) +
                 battery.var_om_cost * (p̃_ch[τ] + p̃_dis[τ]) +
-                params.load_shed_penalty * δ̃_d[τ]
+                params.load_shed_penalty * δ̃_d[τ] + params.load_shed_quad * δ̃_d[τ]^2 / 2
                 for τ in 1:H))
         
         # Power balance constraints

@@ -7,6 +7,7 @@ Main script to run the complete ToySystemQuad test system.
 Executes all three optimization models with full system parameters.
 """
 
+using Revise
 using ToySystemQuad
 
 function main()
@@ -49,7 +50,5 @@ function main()
     return results
 end
 
-# Execute if run directly
-if abspath(PROGRAM_FILE) == @__FILE__
-    results = main()
-end
+# Execute if run directly or in REPL
+results = main()
