@@ -22,7 +22,7 @@ function main()
     params = SystemParameters(
         720,     # hours (30 days)
         30,      # days  
-        1,       # N (number of generators per technology fleet)
+        5,       # N (number of generators per technology fleet)
         42,      # random_seed
         10000.0, # load_shed_penalty ($/MWh)
         0.001    # load_shed_quad
