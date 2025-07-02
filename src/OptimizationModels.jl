@@ -60,11 +60,13 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     @variable(model, y_bat_energy >= 0)  # Battery energy capacity
     
     # Operational variables
-    @variable(model, p[1:G, 1:T] >= 0)  # Generation
+    @variable(model, p[1:G, 1:T] >= 0)  # Generation for fixed demand
+    @variable(model, p_flex[1:G, 1:T] >= 0)  # Generation for flexible demand
     @variable(model, p_ch[1:T] >= 0)  # Battery charging
     @variable(model, p_dis[1:T] >= 0)  # Battery discharging
     @variable(model, soc[1:T] >= 0)  # Battery state of charge
-    @variable(model, δ_d[1:T] >= 0)  # Load shedding
+    @variable(model, δ_d_fixed[1:T] >= 0)  # Fixed demand load shedding
+    @variable(model, δ_d_flex[1:T] >= 0)  # Flexible demand load shedding
     
     # Objective: Total annualized costs
     investment_cost = sum(generators[g].inv_cost * y[g] for g in 1:G) + 
@@ -75,28 +77,30 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
                  battery.fixed_om_cost * y_bat_power
                  
     operational_cost = sum(
-        sum((generators[g].fuel_cost + generators[g].var_om_cost) * p[g,t] for g in 1:G) +
+        sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p[g,t] + p_flex[g,t]) for g in 1:G) +
         battery.var_om_cost * (p_ch[t] + p_dis[t]) +
-        params.load_shed_penalty * δ_d[t] +
-        params.load_shed_quad * δ_d[t]^2 / 2
+        params.load_shed_penalty * (δ_d_fixed[t] + 0.5 * δ_d_flex[t]^2 / params.flex_demand_mw)
         for t in 1:T)
     
     @objective(model, Min, investment_cost + fixed_cost + operational_cost)
     
     # Power balance constraints
     @constraint(model, power_balance[t=1:T],
-        sum(p[g,t] for g in 1:G) + p_dis[t] - p_ch[t] + δ_d[t] == actual_demand[t])
+        sum(p[g,t] for g in 1:G) + p_dis[t] - p_ch[t] + sum(p_flex[g,t] for g in 1:G) + δ_d_flex[t] + δ_d_fixed[t] == actual_demand[t] + params.flex_demand_mw)
+    
+    # Flexible demand constraint: total flexible generation + shedding = available flexible demand
+    @constraint(model, [t=1:T], sum(p_flex[g,t] for g in 1:G) + δ_d_flex[t] == params.flex_demand_mw)
     
     # Generation limits with availability factors
     for g in 1:G
         if generators[g].name == "Nuclear"
-            @constraint(model, [t=1:T], p[g,t] <= y[g] * nuclear_availability[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * nuclear_availability[t])
         elseif generators[g].name == "Wind"
-            @constraint(model, [t=1:T], p[g,t] <= y[g] * actual_wind[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * actual_wind[t])
         elseif generators[g].name == "Gas"
-            @constraint(model, [t=1:T], p[g,t] <= y[g] * gas_availability[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * gas_availability[t])
         else
-            @constraint(model, [t=1:T], p[g,t] <= y[g])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g])
         end
     end
     
@@ -126,10 +130,13 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
             "battery_power_cap" => value(y_bat_power),
             "battery_energy_cap" => value(y_bat_energy),
             "generation" => value.(p),
+            "generation_flex" => value.(p_flex),
             "battery_charge" => value.(p_ch),
             "battery_discharge" => value.(p_dis),
             "battery_soc" => value.(soc),
-            "load_shed" => value.(δ_d),
+            "load_shed" => value.(δ_d_fixed) + value.(δ_d_flex),
+            "load_shed_fixed" => value.(δ_d_fixed),
+            "load_shed_flex" => value.(δ_d_flex),
             "commitment" => ones(G, T),  # No UC constraints for simplicity
             "startup" => zeros(G, T),
             "total_cost" => objective_value(model),
@@ -195,34 +202,38 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
     set_silent(model)
     
     # Operational variables only (capacities are FIXED parameters)
-    @variable(model, p[1:G, 1:T] >= 0)  # Generation
+    @variable(model, p[1:G, 1:T] >= 0)  # Generation for fixed demand
+    @variable(model, p_flex[1:G, 1:T] >= 0)  # Generation for flexible demand
     @variable(model, p_ch[1:T] >= 0)  # Battery charging
     @variable(model, p_dis[1:T] >= 0)  # Battery discharging
     @variable(model, soc[1:T] >= 0)  # Battery state of charge
-    @variable(model, δ_d[1:T] >= 0)  # Load shedding
+    @variable(model, δ_d_fixed[1:T] >= 0)  # Fixed demand load shedding
+    @variable(model, δ_d_flex[1:T] >= 0)  # Flexible demand load shedding
     
     # Objective: Operational costs only
     @objective(model, Min, 
-        sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * p[g,t] for g in 1:G) +
+        sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p[g,t] + p_flex[g,t]) for g in 1:G) +
             battery.var_om_cost * (p_ch[t] + p_dis[t]) +
-            params.load_shed_penalty * δ_d[t] +
-            params.load_shed_quad * δ_d[t]^2 / 2
+            params.load_shed_penalty * (δ_d_fixed[t] + 0.5 * δ_d_flex[t]^2 / params.flex_demand_mw)
             for t in 1:T))
     
     # Power balance constraints
     @constraint(model, power_balance[t=1:T],
-        sum(p[g,t] for g in 1:G) + p_dis[t] - p_ch[t] + δ_d[t] == actual_demand[t])
+        sum(p[g,t] for g in 1:G) + p_dis[t] - p_ch[t] + sum(p_flex[g,t] for g in 1:G) + δ_d_flex[t] + δ_d_fixed[t] == actual_demand[t] + params.flex_demand_mw)
+    
+    # Flexible demand constraint: total flexible generation + shedding = available flexible demand
+    @constraint(model, [t=1:T], sum(p_flex[g,t] for g in 1:G) + δ_d_flex[t] == params.flex_demand_mw)
     
     # Generation limits with FIXED capacities and availability factors
     for g in 1:G
         if generators[g].name == "Nuclear"
-            @constraint(model, [t=1:T], p[g,t] <= capacities[g] * nuclear_availability[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * nuclear_availability[t])
         elseif generators[g].name == "Wind"
-            @constraint(model, [t=1:T], p[g,t] <= capacities[g] * actual_wind[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * actual_wind[t])
         elseif generators[g].name == "Gas"
-            @constraint(model, [t=1:T], p[g,t] <= capacities[g] * gas_availability[t])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * gas_availability[t])
         else
-            @constraint(model, [t=1:T], p[g,t] <= capacities[g])
+            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g])
         end
     end
     
@@ -248,10 +259,13 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
             "status" => "optimal",
             "model_type" => "DLAC-p",
             "generation" => value.(p),
+            "generation_flex" => value.(p_flex),
             "battery_charge" => value.(p_ch),
             "battery_discharge" => value.(p_dis),
             "battery_soc" => value.(soc),
-            "load_shed" => value.(δ_d),
+            "load_shed" => value.(δ_d_fixed) + value.(δ_d_flex),
+            "load_shed_fixed" => value.(δ_d_fixed),
+            "load_shed_flex" => value.(δ_d_flex),
             "commitment" => ones(G, T),
             "startup" => zeros(G, T),
             "total_cost" => objective_value(model),
@@ -266,7 +280,7 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
         # Print comparison with CEM if available
         println("Perfect Foresight Operations Summary:")
         println("  Total operational cost: \$$(round(objective_value(model), digits=0))")
-        println("  Total load shed: $(round(sum(value.(δ_d)), digits=1)) MWh")
+        println("  Total load shed: $(round(sum(value.(δ_d_fixed) + value.(δ_d_flex)), digits=1)) MWh")
         println("  Maximum price: \$$(round(maximum(dual.(power_balance)), digits=2))/MWh")
         
         return result
@@ -329,10 +343,13 @@ function solve_dlac_i_operations(generators, battery, capacities, battery_power_
     
     # Initialize result storage
     generation_schedule = zeros(G, T)
+    generation_flex_schedule = zeros(G, T)
     battery_charge_schedule = zeros(T)
     battery_discharge_schedule = zeros(T)
     battery_soc_schedule = zeros(T)
     load_shed_schedule = zeros(T)
+    load_shed_fixed_schedule = zeros(T)
+    load_shed_flex_schedule = zeros(T)
     prices = zeros(T)
     
     # State tracking
@@ -354,37 +371,42 @@ function solve_dlac_i_operations(generators, battery, capacities, battery_power_
         set_silent(model)
         
         # Decision variables for lookahead horizon
-        @variable(model, p̃[1:G, 1:H] >= 0)  # Generation
+        @variable(model, p̃[1:G, 1:H] >= 0)  # Generation for fixed demand
+        @variable(model, p̃_flex[1:G, 1:H] >= 0)  # Generation for flexible demand
         @variable(model, p̃_ch[1:H] >= 0)    # Battery charging
         @variable(model, p̃_dis[1:H] >= 0)   # Battery discharging
         @variable(model, s̃oc[1:H] >= 0)     # Battery SOC
-        @variable(model, δ̃_d[1:H] >= 0)     # Load shedding
+        @variable(model, δ̃_d_fixed[1:H] >= 0)  # Fixed demand load shedding
+        @variable(model, δ̃_d_flex[1:H] >= 0)   # Flexible demand load shedding
         
         # Objective: Minimize cost over lookahead horizon
         @objective(model, Min, 
-            sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * p̃[g,τ] for g in 1:G) +
+            sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p̃[g,τ] + p̃_flex[g,τ]) for g in 1:G) +
                 battery.var_om_cost * (p̃_ch[τ] + p̃_dis[τ]) +
-                params.load_shed_penalty * δ̃_d[τ] + params.load_shed_quad * δ̃_d[τ]^2 / 2
+                params.load_shed_penalty * (δ̃_d_fixed[τ] + 0.5 * δ̃_d_flex[τ]^2 / params.flex_demand_mw)
                 for τ in 1:H))
         
         # Power balance constraints
         @constraint(model, power_balance_lookahead[τ=1:H],
-            sum(p̃[g,τ] for g in 1:G) + p̃_dis[τ] - p̃_ch[τ] + δ̃_d[τ] == 
-            (τ == 1 ? actual_demand[t] : mean_demand_forecast[horizon[τ]]))
+            sum(p̃[g,τ] for g in 1:G) + p̃_dis[τ] - p̃_ch[τ] + sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_fixed[τ] + δ̃_d_flex[τ] == 
+            (τ == 1 ? actual_demand[t] : mean_demand_forecast[horizon[τ]]) + params.flex_demand_mw)
+        
+        # Flexible demand constraint: total flexible generation + shedding = available flexible demand
+        @constraint(model, [τ=1:H], sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_flex[τ] == params.flex_demand_mw)
         
         # Generation constraints with availability factors
         for g in 1:G
             if generators[g].name == "Nuclear"
-                @constraint(model, [τ=1:H], p̃[g,τ] <= capacities[g] * 
+                @constraint(model, [τ=1:H], p̃[g,τ] + p̃_flex[g,τ] <= capacities[g] * 
                     (τ == 1 ? nuclear_availability[t] : mean_nuclear_avail_forecast[horizon[τ]]))
             elseif generators[g].name == "Wind"
-                @constraint(model, [τ=1:H], p̃[g,τ] <= capacities[g] * 
+                @constraint(model, [τ=1:H], p̃[g,τ] + p̃_flex[g,τ] <= capacities[g] * 
                     (τ == 1 ? actual_wind[t] : mean_wind_forecast[horizon[τ]]))
             elseif generators[g].name == "Gas"
-                @constraint(model, [τ=1:H], p̃[g,τ] <= capacities[g] * 
+                @constraint(model, [τ=1:H], p̃[g,τ] + p̃_flex[g,τ] <= capacities[g] * 
                     (τ == 1 ? gas_availability[t] : mean_gas_avail_forecast[horizon[τ]]))
             else
-                @constraint(model, [τ=1:H], p̃[g,τ] <= capacities[g])
+                @constraint(model, [τ=1:H], p̃[g,τ] + p̃_flex[g,τ] <= capacities[g])
             end
         end
         
@@ -404,10 +426,13 @@ function solve_dlac_i_operations(generators, battery, capacities, battery_power_
         if termination_status(model) == MOI.OPTIMAL
             # Store first-period decisions only (non-anticipativity)
             generation_schedule[:, t] = value.(p̃[:, 1])
+            generation_flex_schedule[:, t] = value.(p̃_flex[:, 1])
             battery_charge_schedule[t] = value(p̃_ch[1])
             battery_discharge_schedule[t] = value(p̃_dis[1])
             battery_soc_schedule[t] = value(s̃oc[1])
-            load_shed_schedule[t] = value(δ̃_d[1])
+            load_shed_schedule[t] = value(δ̃_d_fixed[1]) + value(δ̃_d_flex[1])
+            load_shed_fixed_schedule[t] = value(δ̃_d_fixed[1])
+            load_shed_flex_schedule[t] = value(δ̃_d_flex[1])
             prices[t] = dual(power_balance_lookahead[1])
             
             # Update SOC state for next iteration
@@ -423,17 +448,20 @@ function solve_dlac_i_operations(generators, battery, capacities, battery_power_
         "status" => "optimal",
         "model_type" => "DLAC-i",
         "generation" => generation_schedule,
+        "generation_flex" => generation_flex_schedule,
         "battery_charge" => battery_charge_schedule,
         "battery_discharge" => battery_discharge_schedule,
         "battery_soc" => battery_soc_schedule,
         "load_shed" => load_shed_schedule,
+        "load_shed_fixed" => load_shed_fixed_schedule,
+        "load_shed_flex" => load_shed_flex_schedule,
         "commitment" => ones(G, T),
         "startup" => zeros(G, T),
         "prices" => prices,
         "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
-                               generation_schedule[g,t] for g in 1:G) + 
+                               (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
                                battery.var_om_cost * (battery_charge_schedule[t] + battery_discharge_schedule[t]) +
-                               params.load_shed_penalty * load_shed_schedule[t] for t in 1:T),
+                               params.load_shed_penalty * (load_shed_fixed_schedule[t] + 0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
         "nuclear_availability" => nuclear_availability,
         "gas_availability" => gas_availability
     )
@@ -502,9 +530,22 @@ function save_operational_results(results, generators, battery, model_name, outp
         Battery_SOC = results["battery_soc"]
     )
     
-    # Add generation columns
+    # Add load shedding breakdown if available
+    if haskey(results, "load_shed_fixed")
+        df[!, "Load_Shed_Fixed"] = results["load_shed_fixed"]
+        df[!, "Load_Shed_Flex"] = results["load_shed_flex"]
+    end
+    
+    # Add generation columns for fixed demand
     for g in 1:G
         df[!, "$(generators[g].name)_Generation"] = results["generation"][g, :]
+    end
+    
+    # Add flexible generation columns if available
+    if haskey(results, "generation_flex")
+        for g in 1:G
+            df[!, "$(generators[g].name)_Generation_Flex"] = results["generation_flex"][g, :]
+        end
     end
     
     # Save main results
@@ -526,6 +567,12 @@ function save_operational_results(results, generators, battery, model_name, outp
     for g in 1:G
         total_gen = sum(results["generation"][g, :])
         push!(summary_df, ("$(generators[g].name)_Total_Generation_MWh", total_gen))
+        
+        # Add flexible generation if available
+        if haskey(results, "generation_flex")
+            total_gen_flex = sum(results["generation_flex"][g, :])
+            push!(summary_df, ("$(generators[g].name)_Total_Generation_Flex_MWh", total_gen_flex))
+        end
     end
     
     CSV.write(joinpath(output_dir, "$(model_name)_summary.csv"), summary_df)
@@ -558,19 +605,35 @@ function calculate_profits_and_save(generators, battery, operational_results, ca
         PMR_Percent = Float64[]
     )
     
-    # Generator profits: π_n = Σ_t (λ_t * p_n,t - c^op_n * p_n,t)
+    # Generator profits: π_n = Σ_t (λ_t * (p_n,t + p_flex_n,t) - c^op_n * (p_n,t + p_flex_n,t))
     for g in 1:G
         gen_name = generators[g].name
         capacity = capacities[g]
         total_gen = sum(operational_results["generation"][g, :])
+        
+        # Add flexible generation if available
+        if haskey(operational_results, "generation_flex")
+            total_gen += sum(operational_results["generation_flex"][g, :])
+            total_gen_flex = sum(operational_results["generation_flex"][g, :])
+        else
+            total_gen_flex = 0.0
+        end
+        
         capacity_factor = capacity > 0 ? total_gen / (capacity * T) : 0.0
         
-        # Revenue: Σ_t λ_t * p_n,t
+        # Revenue: Σ_t λ_t * (p_n,t + p_flex_n,t)
         energy_revenue = sum(operational_results["prices"][t] * operational_results["generation"][g,t] for t in 1:T)
+        if haskey(operational_results, "generation_flex")
+            energy_revenue += sum(operational_results["prices"][t] * operational_results["generation_flex"][g,t] for t in 1:T)
+        end
         
-        # Operating costs: Σ_t c^op_n * p_n,t
+        # Operating costs: Σ_t c^op_n * (p_n,t + p_flex_n,t)
         fuel_costs = sum(generators[g].fuel_cost * operational_results["generation"][g,t] for t in 1:T)
         vom_costs = sum(generators[g].var_om_cost * operational_results["generation"][g,t] for t in 1:T)
+        if haskey(operational_results, "generation_flex")
+            fuel_costs += sum(generators[g].fuel_cost * operational_results["generation_flex"][g,t] for t in 1:T)
+            vom_costs += sum(generators[g].var_om_cost * operational_results["generation_flex"][g,t] for t in 1:T)
+        end
         
         # Fixed costs
         fixed_om_costs = generators[g].fixed_om_cost * capacity
@@ -633,12 +696,19 @@ function compute_pmr(operational_results, generators, battery, capacities, batte
     # Generator PMRs
     for g in 1:G
         if capacities[g] > 1e-6  # Only compute for non-zero capacities
-            # Revenue
+            # Revenue including flexible generation
             energy_revenue = sum(operational_results["prices"][t] * operational_results["generation"][g,t] for t in 1:T)
+            if haskey(operational_results, "generation_flex")
+                energy_revenue += sum(operational_results["prices"][t] * operational_results["generation_flex"][g,t] for t in 1:T)
+            end
             
-            # Costs
+            # Costs including flexible generation
             fuel_costs = sum(generators[g].fuel_cost * operational_results["generation"][g,t] for t in 1:T)
             vom_costs = sum(generators[g].var_om_cost * operational_results["generation"][g,t] for t in 1:T)
+            if haskey(operational_results, "generation_flex")
+                fuel_costs += sum(generators[g].fuel_cost * operational_results["generation_flex"][g,t] for t in 1:T)
+                vom_costs += sum(generators[g].var_om_cost * operational_results["generation_flex"][g,t] for t in 1:T)
+            end
             # Note: startup costs not tracked in current implementation, assuming zero
             startup_costs = 0.0
             fixed_om_costs = generators[g].fixed_om_cost * capacities[g]

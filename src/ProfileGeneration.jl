@@ -17,6 +17,7 @@ struct SystemParameters
     random_seed::Int        # For reproducibility
     load_shed_penalty::Float64  # $/MWh penalty for unserved energy
     load_shed_quad::Float64     # Quadratic load shed penalty coefficient
+    flex_demand_mw::Float64     # MW of flexible demand (rest is fixed)
 end
 
 export get_base_demand_profile, get_base_wind_profile
@@ -402,7 +403,8 @@ function generate_scenarios(actual_demand, actual_wind, nuclear_availability, ga
             params.hours, params.days, 
             params.N,
             params.random_seed + scenario * 100000,
-            params.load_shed_penalty, params.load_shed_quad
+            params.load_shed_penalty, params.load_shed_quad,
+            params.flex_demand_mw
         )
         nuclear_fleet_mean, _ = generate_fleet_availability(nuclear_scenario_params, :nuclear)
         
@@ -411,7 +413,8 @@ function generate_scenarios(actual_demand, actual_wind, nuclear_availability, ga
             params.hours, params.days,
             params.N,
             params.random_seed + scenario * 200000, 
-            params.load_shed_penalty, params.load_shed_quad
+            params.load_shed_penalty, params.load_shed_quad,
+            params.flex_demand_mw
         )
         gas_fleet_mean, _ = generate_fleet_availability(gas_scenario_params, :gas)
         
@@ -436,9 +439,11 @@ function create_actual_and_scenarios(params=nothing)
         params = SystemParameters(
             720,    # hours (30 days)
             30,     # days
+            5,      # N (number of generators per technology)
             42,     # random_seed
             10000.0, # load_shed_penalty
-            0.001   # load_shed_quad
+            0.001,  # load_shed_quad
+            100.0   # flex_demand_mw
         )
     end
     

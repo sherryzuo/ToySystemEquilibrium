@@ -27,7 +27,8 @@ function test_fixed_point_validation()
         5,       # N (number of generators per technology fleet)
         42,      # random_seed
         10000.0, # load_shed_penalty ($/MWh)
-        0.001    # load_shed_quad
+        0.001,   # load_shed_quad
+        100.0    # flex_demand_mw
     )
     
     generators, battery, profiles = create_complete_toy_system(params)

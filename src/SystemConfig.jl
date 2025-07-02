@@ -81,7 +81,8 @@ function get_default_system_parameters()
         5,    # N (number of generators per technology)
         42,     # random_seed
         10000.0, # load_shed_penalty
-        0.001   # load_shed_quad
+        0.001,   # load_shed_quad
+        100.0    # flex_demand_mw
     )
 end
 

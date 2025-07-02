@@ -21,7 +21,8 @@ function main()
         5,       # N (number of generators per technology fleet)
         42,      # random_seed
         10000.0, # load_shed_penalty ($/MWh)
-        0.001    # load_shed_quad
+        0.001,   # load_shed_quad
+        100.0    # flex_demand_mw
     )
     
     println("This will run all three optimization models with:")
@@ -29,6 +30,7 @@ function main()
     println("  - Fleet-based thermal generation ($(params.N) generators per technology)")
     println("  - 5 stochastic scenarios for DLAC-i operations")
     println("  - Realistic wind forecast error modeling")
+    println("  - Flexible demand: $(params.flex_demand_mw) MW with quadratic pricing")
     println("  - Random seed: $(params.random_seed)")
     println()
     
