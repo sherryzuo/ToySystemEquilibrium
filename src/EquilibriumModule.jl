@@ -19,7 +19,78 @@ using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles
 using ..OptimizationModels: solve_perfect_foresight_operations, solve_dlac_i_operations, compute_pmr
 
 export EquilibriumParameters, solve_equilibrium, run_policy_equilibrium
-export save_equilibrium_results, analyze_equilibrium_convergence
+export save_equilibrium_results, analyze_equilibrium_convergence, resume_from_log
+export PolicyFunction, PerfectForesight, DLAC_i
+
+# =============================================================================
+# LOG FILE UTILITIES
+# =============================================================================
+
+"""
+    resume_from_log(log_file, generators, battery)
+
+Read the last line from an equilibrium log file and extract capacities for resuming.
+Returns (last_iteration, capacities, battery_power_cap, battery_energy_cap) or nothing if file doesn't exist.
+"""
+function resume_from_log(log_file::String, generators, battery)
+    if !isfile(log_file)
+        return nothing
+    end
+    
+    try
+        # Read the CSV file
+        df = CSV.read(log_file, DataFrame)
+        
+        if nrow(df) == 0
+            return nothing
+        end
+        
+        # Get the last row
+        last_row = df[end, :]
+        last_iteration = last_row.Iteration
+        
+        # Extract capacities
+        G = length(generators)
+        capacities = zeros(G)
+        
+        for g in 1:G
+            cap_col = "$(generators[g].name)_capacity_MW"
+            if hasproperty(last_row, Symbol(cap_col))
+                capacities[g] = last_row[Symbol(cap_col)]
+            else
+                println("Warning: Could not find column $cap_col in log file")
+                return nothing
+            end
+        end
+        
+        # Extract battery power capacity
+        battery_power_cap = 0.0
+        if hasproperty(last_row, :Battery_capacity_MW)
+            battery_power_cap = last_row.Battery_capacity_MW
+        else
+            println("Warning: Could not find Battery_capacity_MW column in log file")
+            return nothing
+        end
+        
+        # Calculate battery energy capacity from power capacity
+        battery_energy_cap = min(battery_power_cap * battery.duration, battery.max_energy_capacity)
+        
+        println("Resuming from log file: $log_file")
+        println("  Last iteration: $last_iteration")
+        println("  Resuming capacities:")
+        for g in 1:G
+            println("    $(generators[g].name): $(round(capacities[g], digits=1)) MW")
+        end
+        println("    Battery Power: $(round(battery_power_cap, digits=1)) MW")
+        println("    Battery Energy: $(round(battery_energy_cap, digits=1)) MWh")
+        
+        return (last_iteration, capacities, battery_power_cap, battery_energy_cap)
+        
+    catch e
+        println("Error reading log file $log_file: $e")
+        return nothing
+    end
+end
 
 # =============================================================================
 # EQUILIBRIUM CONFIGURATION
@@ -36,15 +107,20 @@ struct EquilibriumParameters
     step_size::Float64
     smoothing_beta::Float64
     min_capacity_threshold::Float64
+    update_generators::Vector{Bool}  # Which generators to update (true = update, false = freeze)
+    update_battery::Bool             # Whether to update battery
     
     function EquilibriumParameters(;
         max_iterations::Int = 20,
         tolerance::Float64 = 1e-3,
         step_size::Float64 = 0.05,
         smoothing_beta::Float64 = 10.0,
-        min_capacity_threshold::Float64 = 1e-6
+        min_capacity_threshold::Float64 = 1e-6,
+        update_generators::Vector{Bool} = Bool[],  # Empty = update all
+        update_battery::Bool = true
     )
-        new(max_iterations, tolerance, step_size, smoothing_beta, min_capacity_threshold)
+        new(max_iterations, tolerance, step_size, smoothing_beta, min_capacity_threshold, 
+            update_generators, update_battery)
     end
 end
 
@@ -82,67 +158,153 @@ function call_policy_function(policy::PolicyFunction, generators, battery, capac
 end
 
 # =============================================================================
+# OSCILLATION DETECTION
+# =============================================================================
+
+"""
+    detect_magnitude_oscillation(pmr_history, threshold=10.0)
+
+Detect oscillations based on magnitude flip-flops in individual PMR values.
+Returns true if any PMR component shows large changes in opposite directions.
+"""
+function detect_magnitude_oscillation(pmr_history, threshold=10.0)
+    if length(pmr_history) < 3
+        return false
+    end
+    
+    # Get last 3 PMR vectors
+    recent_pmrs = pmr_history[end-2:end]
+    n_components = length(recent_pmrs[1])
+    
+    # Check each PMR component for oscillations
+    for i in 1:n_components
+        # Extract PMR values for this component across last 3 iterations
+        pmr_series = [recent_pmrs[j][i] for j in 1:3]
+        
+        # Calculate consecutive changes
+        change_1 = pmr_series[2] - pmr_series[1]  # From iter n-2 to n-1
+        change_2 = pmr_series[3] - pmr_series[2]  # From iter n-1 to n
+        
+        # Check for large magnitude changes in opposite directions
+        large_changes = abs(change_1) > threshold && abs(change_2) > threshold
+        opposite_directions = sign(change_1) != sign(change_2)
+        
+        if large_changes && opposite_directions
+            println("  Oscillation detected in component $i: $(round(pmr_series[1], digits=2))% → $(round(pmr_series[2], digits=2))% → $(round(pmr_series[3], digits=2))%")
+            return true
+        end
+    end
+    
+    # Also check maximum absolute PMR oscillations (original logic)
+    recent_max_pmrs = [maximum(abs.(pmr)) for pmr in recent_pmrs]
+    change_1 = recent_max_pmrs[2] - recent_max_pmrs[1]
+    change_2 = recent_max_pmrs[3] - recent_max_pmrs[2]
+    
+    large_changes = abs(change_1) > threshold && abs(change_2) > threshold
+    opposite_directions = sign(change_1) != sign(change_2)
+    
+    if large_changes && opposite_directions
+        println("  Oscillation detected in max PMR: $(round(recent_max_pmrs[1], digits=2))% → $(round(recent_max_pmrs[2], digits=2))% → $(round(recent_max_pmrs[3], digits=2))%")
+        return true
+    end
+    
+    return false
+end
+
+# =============================================================================
 # CAPACITY UPDATE MECHANISM
 # =============================================================================
 
 """
-    update_capacities_with_smoothing(current_capacities, pmr_values, generators, 
-                                    step_size, smoothing_beta, min_threshold)
+    softplus(x, β=10.0)
 
-Update capacities based on PMR values using softplus smoothing for numerical stability.
-Positive PMR → capacity increases, Negative PMR → capacity decreases.
+Compute the softplus function as a smooth approximation to max(0, x).
+The parameter β controls the sharpness of the approximation.
+Uses numerically stable implementation for large inputs.
 """
-function update_capacities_with_smoothing(current_capacities, pmr_values, generators, 
-                                         step_size, smoothing_beta, min_threshold)
-    G = length(generators)
-    new_capacities = zeros(G)
-    
-    for g in 1:G
-        if current_capacities[g] > min_threshold
-            # Proportional update based on current capacity and PMR
-            capacity_update = current_capacities[g] + step_size * current_capacities[g] * pmr_values[g] / 100.0
-        else
-            # For zero/small capacities, use absolute update if PMR is positive
-            capacity_update = pmr_values[g] > 0 ? step_size * generators[g].max_capacity / 10.0 : 0.0
-        end
-        
-        # Apply softplus smoothing: f(x) = log(1 + exp(β*x)) / β
-        # This ensures capacity is always positive and smooth
-        capacity_update = max(capacity_update, 0.0)  # Ensure non-negative input
-        new_capacities[g] = log(1 + exp(smoothing_beta * capacity_update)) / smoothing_beta
-        
-        # Enforce maximum capacity constraints
-        new_capacities[g] = min(new_capacities[g], generators[g].max_capacity)
+function softplus(x, β=10.0)
+    # For large inputs, softplus(x) ≈ x to avoid overflow
+    # Use the identity: log(1 + exp(βx)) = βx + log(1 + exp(-βx)) for βx > 0
+    βx = β * x
+    if βx > 20.0  # exp(20) ≈ 5e8, beyond this we risk overflow
+        return x  # For large x, softplus(x) ≈ x
+    elseif βx < -20.0  # For very negative x, softplus(x) ≈ 0
+        return 0.0
+    else
+        return (1.0 / β) * log(1.0 + exp(βx))
     end
-    
-    return new_capacities
 end
 
 """
-    update_battery_capacity_with_smoothing(current_power_cap, current_energy_cap, 
-                                          battery_pmr, battery, step_size, smoothing_beta, min_threshold)
+    update_all_capacities(current_capacities, current_battery_power_cap, current_battery_energy_cap,
+                         pmr_values, generators, battery, step_size, min_threshold, pmr_history, 
+                         update_generators, update_battery)
 
-Update battery capacities based on PMR using softplus smoothing.
+Selective capacity update with fixed step size: new_capacity = current_capacity + step_size * PMR/100
+Only updates capacities where the corresponding update flag is true.
 """
-function update_battery_capacity_with_smoothing(current_power_cap, current_energy_cap, 
-                                               battery_pmr, battery, step_size, smoothing_beta, min_threshold)
-    if current_power_cap > min_threshold
-        # Proportional update for power capacity
-        power_update = current_power_cap + step_size * current_power_cap * battery_pmr / 100.0
-    else
-        # For zero/small capacity, use absolute update if PMR is positive
-        power_update = battery_pmr > 0 ? step_size * battery.max_power_capacity / 10.0 : 0.0
+function update_all_capacities(current_capacities, current_battery_power_cap, current_battery_energy_cap,
+                               pmr_values, generators, battery, step_size, min_threshold, pmr_history=nothing,
+                               update_generators::Vector{Bool}=Bool[], update_battery::Bool=true)
+    G = length(generators)
+    
+    # If update_generators is empty, default to updating all generators
+    if isempty(update_generators)
+        update_generators = fill(true, G)
     end
     
-    # Apply softplus smoothing
-    power_update = max(power_update, 0.0)
-    new_power_cap = log(1 + exp(smoothing_beta * power_update)) / smoothing_beta
-    new_power_cap = min(new_power_cap, battery.max_power_capacity)
+    println("DEBUG - Selective Capacity Update:")
+    println("  Using fixed step size: $step_size")
+    println("  Generator update flags: $update_generators")
+    println("  Battery update flag: $update_battery")
     
-    # Energy capacity follows power capacity with duration constraint
-    new_energy_cap = min(new_power_cap * battery.duration, battery.max_energy_capacity)
+    # Update generator capacities (only if flagged for update)
+    new_capacities = Float64.(current_capacities)  # Ensure Float64 array
+    for g in 1:G
+        current_cap = current_capacities[g]
+        pmr = pmr_values[g]
+        
+        if update_generators[g]
+            # Simple update: capacity + step_size * (PMR / 100)
+            new_cap = Float64(current_cap) + Float64(step_size) * (Float64(pmr) / 100.0)
+            new_capacities[g] = Float64(softplus(new_cap))
+            
+            println("  Gen $g ($(generators[g].name)) - UPDATING:")
+            println("    Current: $(round(current_cap, digits=2)) MW, PMR: $(round(pmr, digits=2))%")
+            println("    Update: $(round(new_capacities[g], digits=2)) MW")
+        else
+            # Keep current capacity frozen
+            new_capacities[g] = Float64(current_cap)
+            
+            println("  Gen $g ($(generators[g].name)) - FROZEN:")
+            println("    Capacity: $(round(current_cap, digits=2)) MW, PMR: $(round(pmr, digits=2))%")
+        end
+    end
     
-    return new_power_cap, new_energy_cap
+    # Update battery capacity (only if flagged for update)
+    battery_pmr = pmr_values[G+1]
+    
+    if update_battery
+        # Simple update for battery
+        new_battery_power_cap = Float64(current_battery_power_cap) + Float64(step_size) * (Float64(battery_pmr) / 100.0)
+        new_battery_power_cap = Float64(softplus(new_battery_power_cap))
+        
+        println("  Battery - UPDATING:")
+        println("    Current: $(round(current_battery_power_cap, digits=2)) MW, PMR: $(round(battery_pmr, digits=2))%")
+        println("    Update: $(round(new_battery_power_cap, digits=2)) MW")
+    else
+        # Keep current battery capacity frozen
+        new_battery_power_cap = Float64(current_battery_power_cap)
+        
+        println("  Battery - FROZEN:")
+        println("    Capacity: $(round(current_battery_power_cap, digits=2)) MW, PMR: $(round(battery_pmr, digits=2))%")
+    end
+    
+    # Energy capacity follows power capacity
+    new_battery_energy_cap = new_battery_power_cap * battery.duration
+    println("    Energy cap: $(round(new_battery_energy_cap, digits=2)) MWh")
+    
+    return new_capacities, new_battery_power_cap, new_battery_energy_cap
 end
 
 # =============================================================================
@@ -227,9 +389,14 @@ end
 """
     solve_equilibrium(generators, battery, initial_capacities, initial_battery_power_cap, 
                      initial_battery_energy_cap, profiles, policy; 
-                     equilibrium_params=EquilibriumParameters(), output_dir="results/equilibrium")
+                     equilibrium_params=EquilibriumParameters(), output_dir="results/equilibrium",
+                     resume=false)
 
 Solve for capacity equilibrium using fixed-point iteration with the specified policy function.
+Saves iteration logs in CSV format compatible with equilibrium_plots.py script.
+
+Args:
+- resume: If true, attempts to resume from existing log file. If false, starts fresh.
 
 Returns:
 - Dictionary with final capacities, convergence info, and iteration history
@@ -237,7 +404,7 @@ Returns:
 function solve_equilibrium(generators, battery, initial_capacities, initial_battery_power_cap, 
                           initial_battery_energy_cap, profiles::SystemProfiles, policy::PolicyFunction;
                           equilibrium_params::EquilibriumParameters = EquilibriumParameters(),
-                          output_dir="results/equilibrium")
+                          output_dir="results/equilibrium", resume::Bool = false)
     
     println("="^80)
     println("EQUILIBRIUM SOLVER: $(policy) Policy")
@@ -265,9 +432,49 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     converged = false
     iteration = 0
     
+    # Set up real-time CSV logging (compatible with equilibrium_plots.py)
+    mkpath(output_dir)
+    log_file = joinpath(output_dir, "equilibrium_log.csv")
+    
+    # Handle resume logic
+    starting_iteration = 1
+    if resume
+        resume_data = resume_from_log(log_file, generators, battery)
+        if resume_data !== nothing
+            last_iteration, resume_capacities, resume_battery_power_cap, resume_battery_energy_cap = resume_data
+            current_capacities = resume_capacities
+            current_battery_power_cap = resume_battery_power_cap
+            current_battery_energy_cap = resume_battery_energy_cap
+            starting_iteration = last_iteration + 1
+            println("Resuming from iteration $starting_iteration")
+        else
+            println("Could not resume from log file, starting fresh")
+        end
+    end
+    
+    # Create CSV headers compatible with plotting script
+    csv_headers = ["Iteration"]
+    for g in 1:G
+        push!(csv_headers, "$(generators[g].name)_capacity_MW")
+    end
+    push!(csv_headers, "Battery_capacity_MW")  # Power capacity for battery
+    for g in 1:G
+        push!(csv_headers, "$(generators[g].name)_pmr")
+    end
+    push!(csv_headers, "Battery_pmr")
+    push!(csv_headers, "max_pmr")
+    push!(csv_headers, "total_cost")
+    
+    # Initialize CSV file with headers (only if starting fresh or resume failed)
+    if !resume || starting_iteration == 1
+        open(log_file, "w") do f
+            println(f, join(csv_headers, ","))
+        end
+    end
+    
     println("Starting fixed-point iteration...")
     
-    for iter in 1:equilibrium_params.max_iterations
+    for iter in starting_iteration:(starting_iteration + equilibrium_params.max_iterations - 1)
         iteration = iter
         println("\n--- Iteration $iter ---")
         
@@ -305,6 +512,34 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             println("  $(generators[g].name): $(round(pmr_values[g], digits=2))%")
         end
         println("  Battery: $(round(pmr_values[G+1], digits=2))%")
+        step_size = equilibrium_params.step_size
+        # Log current iteration to CSV (real-time logging)
+        max_abs_pmr = maximum(abs.(pmr_values))
+        # if max_abs_pmr < 100
+        #     step_size = step_size * 0.1
+        # end
+        csv_row = Any[iter]  # Start with Any array to handle mixed types
+        
+        # Add capacities
+        for g in 1:G
+            push!(csv_row, current_capacities[g])
+        end
+        push!(csv_row, current_battery_power_cap)  # Battery power capacity
+        
+        # Add PMR values
+        for g in 1:G
+            push!(csv_row, pmr_values[g])
+        end
+        push!(csv_row, pmr_values[G+1])  # Battery PMR
+        push!(csv_row, max_abs_pmr)      # Max absolute PMR
+        
+        # Add objective function (total cost)
+        push!(csv_row, operational_result["total_cost"])
+        
+        # Append to CSV file
+        open(log_file, "a") do f
+            println(f, join(csv_row, ","))
+        end
         
         # Check convergence
         if check_convergence(pmr_values, equilibrium_params.tolerance)
@@ -314,17 +549,12 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             break
         end
         
-        # Update capacities based on PMR
-        new_capacities = update_capacities_with_smoothing(
-            current_capacities, pmr_values[1:G], generators,
-            equilibrium_params.step_size, equilibrium_params.smoothing_beta,
-            equilibrium_params.min_capacity_threshold
-        )
-        
-        new_battery_power_cap, new_battery_energy_cap = update_battery_capacity_with_smoothing(
-            current_battery_power_cap, current_battery_energy_cap, pmr_values[G+1], battery,
-            equilibrium_params.step_size, equilibrium_params.smoothing_beta,
-            equilibrium_params.min_capacity_threshold
+        # Update all capacities together (generators + battery) with selective updating
+        new_capacities, new_battery_power_cap, new_battery_energy_cap = update_all_capacities(
+            current_capacities, current_battery_power_cap, current_battery_energy_cap,
+            pmr_values, generators, battery, step_size,
+            equilibrium_params.min_capacity_threshold, pmr_history,
+            equilibrium_params.update_generators, equilibrium_params.update_battery
         )
         
         # Compute convergence metrics
@@ -360,7 +590,8 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         "battery_energy_history" => battery_energy_history,
         "pmr_history" => pmr_history,
         "convergence_metrics_history" => convergence_metrics_history,
-        "equilibrium_params" => equilibrium_params
+        "equilibrium_params" => equilibrium_params,
+        "log_file" => log_file
     )
     
     println("\n" * "="^80)
@@ -371,6 +602,7 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         println("EQUILIBRIUM DID NOT CONVERGE in $(equilibrium_params.max_iterations) iterations")
         println("Final max |PMR|: $(round(maximum(abs.(final_pmr)), digits=3))%")
     end
+    println("Iteration log saved to: $log_file")
     println("="^80)
     
     return result
@@ -431,8 +663,9 @@ function save_equilibrium_results(equilibrium_result, generators, battery, outpu
         
         # 3. Convergence metrics
         if length(equilibrium_result["convergence_metrics_history"]) > 0
+            n_conv_metrics = length(equilibrium_result["convergence_metrics_history"])
             convergence_df = DataFrame(
-                Iteration = 2:n_iterations,  # Convergence metrics start from iteration 2
+                Iteration = 2:(n_conv_metrics+1),  # Convergence metrics start from iteration 2
                 Max_PMR_Change = [m["max_pmr_change"] for m in equilibrium_result["convergence_metrics_history"]],
                 Capacity_Change_Norm = [m["capacity_change_norm"] for m in equilibrium_result["convergence_metrics_history"]],
                 Oscillation_Detected = [m["oscillation_detected"] for m in equilibrium_result["convergence_metrics_history"]],
@@ -449,14 +682,14 @@ end
 """
     run_policy_equilibrium(generators, battery, initial_capacities, initial_battery_power_cap, 
                           initial_battery_energy_cap, profiles, policy;
-                          equilibrium_params=EquilibriumParameters(), base_output_dir="results")
+                          equilibrium_params=EquilibriumParameters(), base_output_dir="results", resume=false)
 
 Complete equilibrium run with automatic directory creation and result saving.
 """
 function run_policy_equilibrium(generators, battery, initial_capacities, initial_battery_power_cap, 
                                initial_battery_energy_cap, profiles::SystemProfiles, policy::PolicyFunction;
                                equilibrium_params::EquilibriumParameters = EquilibriumParameters(),
-                               base_output_dir="results")
+                               base_output_dir="results", resume::Bool = false)
     
     # Create equilibrium-specific output directory
     equilibrium_dir = joinpath(base_output_dir, "equilibrium")
@@ -466,7 +699,7 @@ function run_policy_equilibrium(generators, battery, initial_capacities, initial
     # Solve equilibrium
     result = solve_equilibrium(generators, battery, initial_capacities, initial_battery_power_cap, 
                               initial_battery_energy_cap, profiles, policy;
-                              equilibrium_params=equilibrium_params, output_dir=policy_dir)
+                              equilibrium_params=equilibrium_params, output_dir=policy_dir, resume=resume)
     
     # Save results
     save_equilibrium_results(result, generators, battery, policy_dir)

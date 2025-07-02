@@ -25,6 +25,7 @@ include("SystemConfig.jl")
 include("OptimizationModels.jl")
 include("PlottingModule.jl")
 include("TestRunner.jl")
+include("EquilibriumModule.jl")
 
 # Re-export key functions from submodules
 using .SystemConfig
@@ -32,6 +33,7 @@ using .ProfileGeneration
 using .OptimizationModels
 using .PlottingModule
 using .TestRunner
+using .EquilibriumModule
 
 # Export main functions for external use
 export run_complete_test_system
@@ -51,6 +53,11 @@ export generate_fleet_availability, generate_single_nuclear_availability, genera
 export calculate_profits_and_save, compute_pmr
 export plot_price_time_series, plot_price_duration_curves, plot_combined_price_analysis
 export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison, generate_all_plots
+
+# Equilibrium solver
+export EquilibriumParameters, solve_equilibrium, run_policy_equilibrium
+export save_equilibrium_results, analyze_equilibrium_convergence, resume_from_log
+export PolicyFunction, PerfectForesight, DLAC_i
 
 # Validation
 export validate_system_configuration, validate_profiles

@@ -9,11 +9,7 @@ Executes all three optimization models with full system parameters.
 
 using Revise
 
-# Load the local ToySystemQuad module
-push!(LOAD_PATH, @__DIR__)
-include("src/ToySystemQuad.jl")
-using .ToySystemQuad
-using .ToySystemQuad: SystemParameters
+using ToySystemQuad
 
 function main()
     println("Starting Complete ToySystemQuad Test System")
