@@ -104,30 +104,34 @@ Configuration parameters for the equilibrium solver.
 struct EquilibriumParameters
     max_iterations::Int
     tolerance::Float64
-    initial_step_size::Float64       # Initial step size
-    step_size_decay::Float64         # Exponential decay factor (e.g., 0.95)
-    min_step_size::Float64           # Minimum step size
-    adaptive_step_size::Bool         # Whether to use adaptive step size
+    step_size::Float64               # Fixed step size
     smoothing_beta::Float64
     min_capacity_threshold::Float64
     update_generators::Vector{Bool}  # Which generators to update (true = update, false = freeze)
     update_battery::Bool             # Whether to update battery
+    anderson_acceleration::Bool      # Whether to use Anderson acceleration
+    anderson_depth::Int              # Number of previous iterations to use in Anderson acceleration
+    anderson_beta_default::Float64   # Default relaxation parameter
+    anderson_beta_max::Float64       # Maximum relaxation parameter
+    anderson_T::Int                  # Interval for recomputing optimal beta
     
     function EquilibriumParameters(;
         max_iterations::Int = 20,
         tolerance::Float64 = 1e-3,
-        initial_step_size::Float64 = 0.05,
-        step_size_decay::Float64 = 0.95,
-        min_step_size::Float64 = 0.001,
-        adaptive_step_size::Bool = true,
+        step_size::Float64 = 0.05,
         smoothing_beta::Float64 = 10.0,
         min_capacity_threshold::Float64 = 1e-6,
         update_generators::Vector{Bool} = Bool[],  # Empty = update all
-        update_battery::Bool = true
+        update_battery::Bool = true,
+        anderson_acceleration::Bool = false,
+        anderson_depth::Int = 5,
+        anderson_beta_default::Float64 = 1.0,
+        anderson_beta_max::Float64 = 3.0,
+        anderson_T::Int = 5
     )
-        new(max_iterations, tolerance, initial_step_size, step_size_decay, min_step_size, 
-            adaptive_step_size, smoothing_beta, min_capacity_threshold, 
-            update_generators, update_battery)
+        new(max_iterations, tolerance, step_size, smoothing_beta, min_capacity_threshold, 
+            update_generators, update_battery, anderson_acceleration, anderson_depth, 
+            anderson_beta_default, anderson_beta_max, anderson_T)
     end
 end
 
@@ -139,46 +143,130 @@ Enum for different operational policy functions.
 @enum PolicyFunction PerfectForesight DLAC_i
 
 # =============================================================================
-# ADAPTIVE STEP SIZE FUNCTIONS
+# ANDERSON ACCELERATION FUNCTIONS
 # =============================================================================
 
 """
-    compute_adaptive_step_size(iteration, equilibrium_params, pmr_history=nothing)
+    anderson_acceleration_aaopt1(x_history, g_history, iteration, anderson_params)
 
-Compute adaptive step size using exponential decay.
-step_size = max(min_step_size, initial_step_size * decay_factor^iteration)
+AAopt1_T Anderson acceleration with optimal relaxation parameter computation.
+Implements Algorithm 2 from the Anderson acceleration literature.
 
-Optional: Can incorporate PMR magnitude for additional adaptivity.
+Args:
+- x_history: History of x iterates 
+- g_history: History of g(x) evaluates
+- iteration: Current iteration number
+- anderson_params: Struct with anderson_depth, anderson_beta_default, anderson_beta_max, anderson_T
+
+Returns:
+- (next_x, beta_used): Next iterate and the beta parameter used
 """
-function compute_adaptive_step_size(iteration::Int, equilibrium_params::EquilibriumParameters, pmr_history=nothing)
-    if !equilibrium_params.adaptive_step_size
-        return equilibrium_params.initial_step_size
+function anderson_acceleration_aaopt1(x_history::Vector{Vector{Float64}}, 
+                                     g_history::Vector{Vector{Float64}},
+                                     iteration::Int,
+                                     anderson_params)
+    
+    k = length(x_history)  # Current iteration index (1-based)
+    
+    if k == 1
+        # First iteration: just return g(x_0)
+        return g_history[1], anderson_params.anderson_beta_default
     end
     
-    # Exponential decay: step_size = initial * decay^iteration
-    step_size = equilibrium_params.initial_step_size * (equilibrium_params.step_size_decay ^ iteration)
+    # Determine m_k (number of iterates to use)
+    m_k = min(k, anderson_params.anderson_depth)
     
-    # Apply minimum step size bound
-    step_size = max(step_size, equilibrium_params.min_step_size)
-    
-    # Optional: Additional adaptivity based on PMR magnitude
-    if pmr_history !== nothing && length(pmr_history) > 0
-        current_pmr = pmr_history[end]
-        max_abs_pmr = maximum(abs.(current_pmr))
+    try
+        # Step 4: Solve for α coefficients
+        # min ||sum(α_i * f(x_{k-m_k+i}))||^2 subject to sum(α_i) = 1
+        # where f(x) = g(x) - x
         
-        # If PMR is very large, reduce step size further to avoid overshooting
-        if max_abs_pmr > 50.0
-            step_size *= 0.5
-        elseif max_abs_pmr > 100.0
-            step_size *= 0.1
+        n = length(x_history[1])
+        F = zeros(n, m_k)
+        
+        # Build residual matrix F where F[:, i] = g(x_{k-m_k+i}) - x_{k-m_k+i}
+        for i in 1:m_k
+            idx = k - m_k + i
+            F[:, i] = g_history[idx] - x_history[idx]
         end
         
-        # Ensure we still respect minimum step size
-        step_size = max(step_size, equilibrium_params.min_step_size)
+        # Solve constrained least squares: min ||F*α||^2 subject to 1^T α = 1
+        ones_vec = ones(m_k)
+        
+        # Use regularized approach for numerical stability
+        regularization = 1e-12
+        FtF = F' * F + regularization * I
+        
+        # Solve: [F'F  1; 1'  0] [α; λ] = [0; 1]
+        augmented_matrix = [FtF ones_vec; ones_vec' 0.0]
+        rhs = [zeros(m_k); 1.0]
+        
+        solution = augmented_matrix \ rhs
+        α = solution[1:m_k]
+        
+        # Step 5: Compute x̄_k and ȳ_k
+        x_bar_k = zeros(n)
+        y_bar_k = zeros(n)
+        
+        for i in 1:m_k
+            idx = k - m_k + i
+            x_bar_k += α[i] * x_history[idx]
+            y_bar_k += α[i] * g_history[idx]
+        end
+        
+        # Step 6-18: Compute optimal β or use previous β
+        beta_k = anderson_params.anderson_beta_default
+        
+        if iteration == 1 || (iteration % anderson_params.anderson_T) == 0
+            # Recompute optimal β
+            
+            # We need g(x̄_k) and g(ȳ_k) - these would require additional function evaluations
+            # For computational efficiency, we'll approximate using the current data
+            # This is a practical modification of the algorithm
+            
+            # Step 8: Compute β_k* = -<f(ȳ_k) - f(x̄_k), f(x̄_k)> / ||f(ȳ_k) - f(x̄_k)||^2
+            f_x_bar_k = y_bar_k - x_bar_k  # f(x̄_k) = g(x̄_k) - x̄_k ≈ ȳ_k - x̄_k
+            
+            # For f(ȳ_k), we approximate it as the residual direction from recent iterates
+            if m_k >= 2
+                # Approximate f(ȳ_k) using the trend in residuals
+                recent_residual = g_history[k] - x_history[k]
+                f_y_bar_k = recent_residual  # Approximation
+                
+                residual_diff = f_y_bar_k - f_x_bar_k
+                residual_diff_norm_sq = dot(residual_diff, residual_diff)
+                
+                if residual_diff_norm_sq > 1e-12
+                    beta_k_star = -dot(residual_diff, f_x_bar_k) / residual_diff_norm_sq
+                    
+                    if beta_k_star <= 0
+                        beta_k = anderson_params.anderson_beta_default
+                    else
+                        beta_k = min(beta_k_star, anderson_params.anderson_beta_max)
+                    end
+                else
+                    beta_k = anderson_params.anderson_beta_default
+                end
+            end
+            
+            # Step 14: x_{k+1} = x̄_k + β_k * (ȳ_k - x̄_k)  [Simplified form]
+            x_next = x_bar_k + beta_k * (y_bar_k - x_bar_k)
+        else
+            # Step 16-17: Use previous β
+            # x_{k+1} = x̄_k + β_k * (ȳ_k - x̄_k)
+            x_next = x_bar_k + beta_k * (y_bar_k - x_bar_k)
+        end
+        
+        println("  AAopt1: Used $m_k iterates, β=$(round(beta_k, digits=3)), α=$(round.(α, digits=3))")
+        return x_next, beta_k
+        
+    catch e
+        println("  AAopt1: Failed with error $e, using simple update")
+        # Fallback to simple fixed-point iteration
+        return g_history[end], anderson_params.anderson_beta_default
     end
-    
-    return step_size
 end
+
 
 # =============================================================================
 # POLICY DISPATCHER
@@ -314,7 +402,7 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
         pmr = pmr_values[g]
         
         if update_generators[g]
-            # Simple update: capacity + step_size * (PMR / 100)
+            # Additive update: capacity + step_size * PMR / 100
             new_cap = Float64(current_cap) + Float64(step_size) * (Float64(pmr) / 100.0)
             new_capacities[g] = Float64(softplus(new_cap))
             
@@ -334,7 +422,7 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
     battery_pmr = pmr_values[G+1]
     
     if update_battery
-        # Simple update for battery
+        # Additive update for battery: capacity + step_size * PMR / 100
         new_battery_power_cap = Float64(current_battery_power_cap) + Float64(step_size) * (Float64(battery_pmr) / 100.0)
         new_battery_power_cap = Float64(softplus(new_battery_power_cap))
         
@@ -461,10 +549,9 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     println("Parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    if equilibrium_params.adaptive_step_size
-        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
-    else
-        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.anderson_acceleration
+        println("  AAopt1_T acceleration: depth=$(equilibrium_params.anderson_depth), β_default=$(equilibrium_params.anderson_beta_default), β_max=$(equilibrium_params.anderson_beta_max), T=$(equilibrium_params.anderson_T)")
     end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     println()
@@ -481,6 +568,11 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     battery_energy_history = Float64[]
     pmr_history = Vector{Vector{Float64}}()
     convergence_metrics_history = Vector{Dict}()
+    
+    # Anderson acceleration tracking for AAopt1_T
+    x_history = Vector{Vector{Float64}}()  # History of x iterates (capacity vectors)
+    g_history = Vector{Vector{Float64}}()  # History of g(x) evaluates (updated capacity vectors)
+    anderson_beta_history = Float64[]      # History of beta values used
     
     converged = false
     iteration = 0
@@ -567,9 +659,9 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         end
         println("  Battery: $(round(pmr_values[G+1], digits=2))%")
         
-        # Compute adaptive step size
-        step_size = compute_adaptive_step_size(iter, equilibrium_params, pmr_history)
-        println("  Adaptive step size: $(round(step_size, digits=6))")
+        # Use fixed step size
+        step_size = equilibrium_params.step_size
+        println("  Step size: $(round(step_size, digits=6))")
         
         # Log current iteration to CSV (real-time logging)
         max_abs_pmr = maximum(abs.(pmr_values))
@@ -608,13 +700,47 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             break
         end
         
-        # Update all capacities together (generators + battery) with selective updating
-        new_capacities, new_battery_power_cap, new_battery_energy_cap = update_all_capacities(
+        # Store current capacities for Anderson acceleration
+        current_x = vcat(current_capacities, [current_battery_power_cap])
+        push!(x_history, current_x)
+        
+        # Compute capacity updates using standard fixed-point iteration
+        proposed_capacities, proposed_battery_power_cap, proposed_battery_energy_cap = update_all_capacities(
             current_capacities, current_battery_power_cap, current_battery_energy_cap,
             pmr_values, generators, battery, step_size,
             equilibrium_params.min_capacity_threshold, pmr_history,
             equilibrium_params.update_generators, equilibrium_params.update_battery
         )
+        
+        # Store g(x) for Anderson acceleration  
+        proposed_x = vcat(proposed_capacities, [proposed_battery_power_cap])
+        push!(g_history, proposed_x)
+        
+        # Apply AAopt1_T Anderson acceleration if enabled
+        if equilibrium_params.anderson_acceleration && length(x_history) >= 1
+            println("  Applying AAopt1_T Anderson acceleration...")
+            accelerated_x, beta_used = anderson_acceleration_aaopt1(
+                x_history, g_history, iter, equilibrium_params
+            )
+            push!(anderson_beta_history, beta_used)
+            
+            # Extract accelerated capacities
+            new_capacities = accelerated_x[1:G]
+            new_battery_power_cap = accelerated_x[G+1]
+            
+            # Apply softplus smoothing to ensure non-negativity
+            for g in 1:G
+                new_capacities[g] = softplus(new_capacities[g], equilibrium_params.smoothing_beta)
+            end
+            new_battery_power_cap = softplus(new_battery_power_cap, equilibrium_params.smoothing_beta)
+            new_battery_energy_cap = new_battery_power_cap * battery.duration
+        else
+            # Use standard update without acceleration
+            new_capacities = proposed_capacities
+            new_battery_power_cap = proposed_battery_power_cap
+            new_battery_energy_cap = proposed_battery_energy_cap
+            push!(anderson_beta_history, equilibrium_params.anderson_beta_default)
+        end
         
         # Compute convergence metrics
         convergence_metrics = compute_convergence_metrics(pmr_history, capacity_history)

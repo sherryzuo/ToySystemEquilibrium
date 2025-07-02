@@ -72,9 +72,9 @@ function test_fixed_point_validation()
     println("="^80)
     
     # Start with zero capacities
-    zero_capacities = fill(500, length(generators))
-    zero_battery_power = 100
-    zero_battery_energy = 400
+    zero_capacities = [100,100,1500]
+    zero_battery_power = 400
+    zero_battery_energy = 400*4
     
     println("Starting capacities (all zero):")
     for (i, gen) in enumerate(generators)
@@ -85,28 +85,29 @@ function test_fixed_point_validation()
     
     # Equilibrium parameters - use adaptive step size for better convergence
     equilibrium_params = EquilibriumParameters(
-        max_iterations = 1000,    
+        max_iterations = 10000,    
         tolerance = 1e-2,       
-        initial_step_size = 0.5,     # Start with larger step size for faster convergence from zero
-        step_size_decay = 0.98,      # Slower decay for validation test
-        min_step_size = 0.01,        # Higher minimum for stability
-        adaptive_step_size = true,   # Enable adaptive step size
+        step_size = 0.7,          # Fixed step size for validation test
         smoothing_beta = 5.0,   
         min_capacity_threshold = 1e-6,
+        anderson_acceleration = true,  # Enable AAopt1_T Anderson acceleration for faster convergence
+        anderson_depth = 3,           # Use fewer iterates for validation test
+        anderson_beta_default = 1.0,  # Default relaxation parameter
+        anderson_beta_max = 2.0,      # Conservative maximum for validation test
+        anderson_T = 3,              # Recompute optimal β every 3 iterations
         # Selective updating examples (uncomment to test):
         # update_generators = [true, true, false],  # Only update Nuclear and Wind, freeze Gas
-        update_generators = [false, false, true], # Only update Gas, freeze Nuclear and Wind
+        # update_generators = [false, false, true], # Only update Gas, freeze Nuclear and Wind
         # update_generators = [true, false, true],  # Update Nuclear and Gas, freeze Wind
-        update_battery = false                     # Freeze battery updates
+        update_battery = true                    # Update battery
     )
     
     println("\nEquilibrium parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    if equilibrium_params.adaptive_step_size
-        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
-    else
-        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.anderson_acceleration
+        println("  AAopt1_T acceleration: depth=$(equilibrium_params.anderson_depth), β_default=$(equilibrium_params.anderson_beta_default), β_max=$(equilibrium_params.anderson_beta_max), T=$(equilibrium_params.anderson_T)")
     end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     

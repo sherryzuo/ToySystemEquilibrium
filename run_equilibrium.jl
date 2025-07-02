@@ -125,23 +125,24 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
     # EQUILIBRIUM PARAMETERS - CONFIGURE HERE
     # ========================================
     equilibrium_params = EquilibriumParameters(
-        max_iterations = 1000,        # Maximum number of iterations
+        max_iterations = 10000,        # Maximum number of iterations
         tolerance = 1e-3,           # Convergence tolerance (PMR threshold)
-        initial_step_size = 0.5,   # Initial step size for capacity updates
-        step_size_decay = 0.95,     # Exponential decay factor (step_size *= decay each iteration)
-        min_step_size = 0.001,      # Minimum step size bound
-        adaptive_step_size = true,  # Enable adaptive step size
+        step_size = 0.5,           # Fixed step size for capacity updates
         smoothing_beta = 10.0,      # Softplus smoothing parameter
-        min_capacity_threshold = 1e-6  # Minimum capacity threshold
+        min_capacity_threshold = 1e-6,  # Minimum capacity threshold
+        anderson_acceleration = true,   # Enable AAopt1_T Anderson acceleration
+        anderson_depth = 5,            # Use 5 previous iterates
+        anderson_beta_default = 1.0,   # Default relaxation parameter
+        anderson_beta_max = 3.0,       # Maximum relaxation parameter  
+        anderson_T = 5                 # Recompute optimal β every 5 iterations
     )
     
     println("Equilibrium parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    if equilibrium_params.adaptive_step_size
-        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
-    else
-        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.anderson_acceleration
+        println("  AAopt1_T acceleration: depth=$(equilibrium_params.anderson_depth), β_default=$(equilibrium_params.anderson_beta_default), β_max=$(equilibrium_params.anderson_beta_max), T=$(equilibrium_params.anderson_T)")
     end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     
