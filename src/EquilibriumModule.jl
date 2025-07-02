@@ -104,7 +104,10 @@ Configuration parameters for the equilibrium solver.
 struct EquilibriumParameters
     max_iterations::Int
     tolerance::Float64
-    step_size::Float64
+    initial_step_size::Float64       # Initial step size
+    step_size_decay::Float64         # Exponential decay factor (e.g., 0.95)
+    min_step_size::Float64           # Minimum step size
+    adaptive_step_size::Bool         # Whether to use adaptive step size
     smoothing_beta::Float64
     min_capacity_threshold::Float64
     update_generators::Vector{Bool}  # Which generators to update (true = update, false = freeze)
@@ -113,13 +116,17 @@ struct EquilibriumParameters
     function EquilibriumParameters(;
         max_iterations::Int = 20,
         tolerance::Float64 = 1e-3,
-        step_size::Float64 = 0.05,
+        initial_step_size::Float64 = 0.05,
+        step_size_decay::Float64 = 0.95,
+        min_step_size::Float64 = 0.001,
+        adaptive_step_size::Bool = true,
         smoothing_beta::Float64 = 10.0,
         min_capacity_threshold::Float64 = 1e-6,
         update_generators::Vector{Bool} = Bool[],  # Empty = update all
         update_battery::Bool = true
     )
-        new(max_iterations, tolerance, step_size, smoothing_beta, min_capacity_threshold, 
+        new(max_iterations, tolerance, initial_step_size, step_size_decay, min_step_size, 
+            adaptive_step_size, smoothing_beta, min_capacity_threshold, 
             update_generators, update_battery)
     end
 end
@@ -130,6 +137,48 @@ end
 Enum for different operational policy functions.
 """
 @enum PolicyFunction PerfectForesight DLAC_i
+
+# =============================================================================
+# ADAPTIVE STEP SIZE FUNCTIONS
+# =============================================================================
+
+"""
+    compute_adaptive_step_size(iteration, equilibrium_params, pmr_history=nothing)
+
+Compute adaptive step size using exponential decay.
+step_size = max(min_step_size, initial_step_size * decay_factor^iteration)
+
+Optional: Can incorporate PMR magnitude for additional adaptivity.
+"""
+function compute_adaptive_step_size(iteration::Int, equilibrium_params::EquilibriumParameters, pmr_history=nothing)
+    if !equilibrium_params.adaptive_step_size
+        return equilibrium_params.initial_step_size
+    end
+    
+    # Exponential decay: step_size = initial * decay^iteration
+    step_size = equilibrium_params.initial_step_size * (equilibrium_params.step_size_decay ^ iteration)
+    
+    # Apply minimum step size bound
+    step_size = max(step_size, equilibrium_params.min_step_size)
+    
+    # Optional: Additional adaptivity based on PMR magnitude
+    if pmr_history !== nothing && length(pmr_history) > 0
+        current_pmr = pmr_history[end]
+        max_abs_pmr = maximum(abs.(current_pmr))
+        
+        # If PMR is very large, reduce step size further to avoid overshooting
+        if max_abs_pmr > 50.0
+            step_size *= 0.5
+        elseif max_abs_pmr > 100.0
+            step_size *= 0.1
+        end
+        
+        # Ensure we still respect minimum step size
+        step_size = max(step_size, equilibrium_params.min_step_size)
+    end
+    
+    return step_size
+end
 
 # =============================================================================
 # POLICY DISPATCHER
@@ -240,7 +289,7 @@ end
                          pmr_values, generators, battery, step_size, min_threshold, pmr_history, 
                          update_generators, update_battery)
 
-Selective capacity update with fixed step size: new_capacity = current_capacity + step_size * PMR/100
+Selective capacity update with adaptive step size: new_capacity = current_capacity + step_size * PMR/100
 Only updates capacities where the corresponding update flag is true.
 """
 function update_all_capacities(current_capacities, current_battery_power_cap, current_battery_energy_cap,
@@ -254,7 +303,7 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
     end
     
     println("DEBUG - Selective Capacity Update:")
-    println("  Using fixed step size: $step_size")
+    println("  Using step size: $step_size")
     println("  Generator update flags: $update_generators")
     println("  Battery update flag: $update_battery")
     
@@ -412,7 +461,11 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     println("Parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.adaptive_step_size
+        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
+    else
+        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     println()
     
@@ -463,6 +516,7 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     end
     push!(csv_headers, "Battery_pmr")
     push!(csv_headers, "max_pmr")
+    push!(csv_headers, "step_size")
     push!(csv_headers, "total_cost")
     
     # Initialize CSV file with headers (only if starting fresh or resume failed)
@@ -512,7 +566,11 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             println("  $(generators[g].name): $(round(pmr_values[g], digits=2))%")
         end
         println("  Battery: $(round(pmr_values[G+1], digits=2))%")
-        step_size = equilibrium_params.step_size
+        
+        # Compute adaptive step size
+        step_size = compute_adaptive_step_size(iter, equilibrium_params, pmr_history)
+        println("  Adaptive step size: $(round(step_size, digits=6))")
+        
         # Log current iteration to CSV (real-time logging)
         max_abs_pmr = maximum(abs.(pmr_values))
         # if max_abs_pmr < 100
@@ -532,6 +590,7 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         end
         push!(csv_row, pmr_values[G+1])  # Battery PMR
         push!(csv_row, max_abs_pmr)      # Max absolute PMR
+        push!(csv_row, step_size)        # Current step size
         
         # Add objective function (total cost)
         push!(csv_row, operational_result["total_cost"])
@@ -628,7 +687,10 @@ function save_equilibrium_results(equilibrium_result, generators, battery, outpu
         Iterations = [equilibrium_result["iterations"]],
         Final_Max_PMR = [maximum(abs.(equilibrium_result["final_pmr"]))],
         Tolerance = [equilibrium_result["equilibrium_params"].tolerance],
-        Step_Size = [equilibrium_result["equilibrium_params"].step_size]
+        Initial_Step_Size = [equilibrium_result["equilibrium_params"].initial_step_size],
+        Adaptive_Step_Size = [equilibrium_result["equilibrium_params"].adaptive_step_size],
+        Step_Size_Decay = [equilibrium_result["equilibrium_params"].step_size_decay],
+        Min_Step_Size = [equilibrium_result["equilibrium_params"].min_step_size]
     )
     
     # Add final capacities

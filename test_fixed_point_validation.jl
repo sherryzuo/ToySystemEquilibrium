@@ -83,11 +83,14 @@ function test_fixed_point_validation()
     println("  Battery Power: $(zero_battery_power) MW")
     println("  Battery Energy: $(zero_battery_energy) MWh")
     
-    # Equilibrium parameters - use small step size for stability
+    # Equilibrium parameters - use adaptive step size for better convergence
     equilibrium_params = EquilibriumParameters(
         max_iterations = 1000,    
         tolerance = 1e-2,       
-        step_size = 0.5,        
+        initial_step_size = 0.5,     # Start with larger step size for faster convergence from zero
+        step_size_decay = 0.98,      # Slower decay for validation test
+        min_step_size = 0.01,        # Higher minimum for stability
+        adaptive_step_size = true,   # Enable adaptive step size
         smoothing_beta = 5.0,   
         min_capacity_threshold = 1e-6,
         # Selective updating examples (uncomment to test):
@@ -100,7 +103,11 @@ function test_fixed_point_validation()
     println("\nEquilibrium parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.adaptive_step_size
+        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
+    else
+        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     
     # Run equilibrium with Perfect Foresight

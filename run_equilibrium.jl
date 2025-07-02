@@ -127,7 +127,10 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
     equilibrium_params = EquilibriumParameters(
         max_iterations = 1000,        # Maximum number of iterations
         tolerance = 1e-3,           # Convergence tolerance (PMR threshold)
-        step_size = 0.05,          # Step size for capacity updates
+        initial_step_size = 0.5,   # Initial step size for capacity updates
+        step_size_decay = 0.95,     # Exponential decay factor (step_size *= decay each iteration)
+        min_step_size = 0.001,      # Minimum step size bound
+        adaptive_step_size = true,  # Enable adaptive step size
         smoothing_beta = 10.0,      # Softplus smoothing parameter
         min_capacity_threshold = 1e-6  # Minimum capacity threshold
     )
@@ -135,7 +138,11 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
     println("Equilibrium parameters:")
     println("  Max iterations: $(equilibrium_params.max_iterations)")
     println("  Tolerance: $(equilibrium_params.tolerance)")
-    println("  Step size: $(equilibrium_params.step_size)")
+    if equilibrium_params.adaptive_step_size
+        println("  Adaptive step size: initial=$(equilibrium_params.initial_step_size), decay=$(equilibrium_params.step_size_decay), min=$(equilibrium_params.min_step_size)")
+    else
+        println("  Fixed step size: $(equilibrium_params.initial_step_size)")
+    end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     
     # Set up system configuration
