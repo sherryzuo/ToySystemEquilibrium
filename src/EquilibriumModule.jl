@@ -728,12 +728,30 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             new_capacities = accelerated_x[1:G]
             new_battery_power_cap = accelerated_x[G+1]
             
-            # Apply softplus smoothing to ensure non-negativity
+            # Apply softplus smoothing and enforce minimum thresholds
+            # Use a larger minimum threshold to prevent zero convergence
+            min_threshold = max(equilibrium_params.min_capacity_threshold, 1.0)  # At least 1 MW
+            
             for g in 1:G
-                new_capacities[g] = softplus(new_capacities[g], equilibrium_params.smoothing_beta)
+                new_capacities[g] = max(
+                    softplus(new_capacities[g], equilibrium_params.smoothing_beta),
+                    min_threshold
+                )
             end
-            new_battery_power_cap = softplus(new_battery_power_cap, equilibrium_params.smoothing_beta)
+            new_battery_power_cap = max(
+                softplus(new_battery_power_cap, equilibrium_params.smoothing_beta),
+                min_threshold
+            )
             new_battery_energy_cap = new_battery_power_cap * battery.duration
+            
+            # Check for unrealistic zero convergence and fall back to standard update
+            total_capacity = sum(new_capacities) + new_battery_power_cap
+            if total_capacity < 10.0  # Less than 10 MW total is unrealistic
+                println("  Anderson produced unrealistic low capacities, using standard update")
+                new_capacities = proposed_capacities
+                new_battery_power_cap = proposed_battery_power_cap
+                new_battery_energy_cap = proposed_battery_energy_cap
+            end
         else
             # Use standard update without acceleration
             new_capacities = proposed_capacities
@@ -813,10 +831,12 @@ function save_equilibrium_results(equilibrium_result, generators, battery, outpu
         Iterations = [equilibrium_result["iterations"]],
         Final_Max_PMR = [maximum(abs.(equilibrium_result["final_pmr"]))],
         Tolerance = [equilibrium_result["equilibrium_params"].tolerance],
-        Initial_Step_Size = [equilibrium_result["equilibrium_params"].initial_step_size],
-        Adaptive_Step_Size = [equilibrium_result["equilibrium_params"].adaptive_step_size],
-        Step_Size_Decay = [equilibrium_result["equilibrium_params"].step_size_decay],
-        Min_Step_Size = [equilibrium_result["equilibrium_params"].min_step_size]
+        Step_Size = [equilibrium_result["equilibrium_params"].step_size],
+        Anderson_Acceleration = [equilibrium_result["equilibrium_params"].anderson_acceleration],
+        Anderson_Depth = [equilibrium_result["equilibrium_params"].anderson_depth],
+        Anderson_Beta_Default = [equilibrium_result["equilibrium_params"].anderson_beta_default],
+        Anderson_Beta_Max = [equilibrium_result["equilibrium_params"].anderson_beta_max],
+        Anderson_T = [equilibrium_result["equilibrium_params"].anderson_T]
     )
     
     # Add final capacities

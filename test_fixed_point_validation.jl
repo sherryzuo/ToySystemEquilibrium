@@ -91,10 +91,10 @@ function test_fixed_point_validation()
         smoothing_beta = 5.0,   
         min_capacity_threshold = 1e-6,
         anderson_acceleration = true,  # Enable AAopt1_T Anderson acceleration for faster convergence
-        anderson_depth = 3,           # Use fewer iterates for validation test
-        anderson_beta_default = 1.0,  # Default relaxation parameter
-        anderson_beta_max = 2.0,      # Conservative maximum for validation test
-        anderson_T = 3,              # Recompute optimal β every 3 iterations
+        anderson_depth = 2,           # Use fewer iterates for validation test
+        anderson_beta_default = 0.4,  # Conservative default relaxation parameter
+        anderson_beta_max = 0.7,      # Conservative maximum for validation test
+        anderson_T = 8,              # Recompute optimal β less frequently
         # Selective updating examples (uncomment to test):
         # update_generators = [true, true, false],  # Only update Nuclear and Wind, freeze Gas
         # update_generators = [false, false, true], # Only update Gas, freeze Nuclear and Wind
