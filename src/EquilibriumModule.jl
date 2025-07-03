@@ -16,11 +16,11 @@ module EquilibriumModule
 
 using CSV, DataFrames, Statistics, LinearAlgebra
 using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles
-using ..OptimizationModels: solve_perfect_foresight_operations, solve_dlac_i_operations, compute_pmr
+using ..OptimizationModels: solve_perfect_foresight_operations, solve_dlac_i_operations, solve_slac_operations, compute_pmr
 
 export EquilibriumParameters, solve_equilibrium, run_policy_equilibrium
 export save_equilibrium_results, analyze_equilibrium_convergence, resume_from_log
-export PolicyFunction, PerfectForesight, DLAC_i
+export PolicyFunction, PerfectForesight, DLAC_i, SLAC
 
 # =============================================================================
 # LOG FILE UTILITIES
@@ -140,7 +140,7 @@ end
 
 Enum for different operational policy functions.
 """
-@enum PolicyFunction PerfectForesight DLAC_i
+@enum PolicyFunction PerfectForesight DLAC_i SLAC
 
 # =============================================================================
 # ANDERSON ACCELERATION FUNCTIONS
@@ -289,6 +289,10 @@ function call_policy_function(policy::PolicyFunction, generators, battery, capac
         return solve_dlac_i_operations(generators, battery, capacities, 
                                      battery_power_cap, battery_energy_cap, 
                                      profiles; output_dir=output_dir, kwargs...)
+    elseif policy == SLAC
+        return solve_slac_operations(generators, battery, capacities, 
+                                   battery_power_cap, battery_energy_cap, 
+                                   profiles; output_dir=output_dir, kwargs...)
     else
         error("Unknown policy function: $policy")
     end

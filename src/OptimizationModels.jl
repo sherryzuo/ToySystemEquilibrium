@@ -12,7 +12,7 @@ module OptimizationModels
 using JuMP, Gurobi, LinearAlgebra, CSV, DataFrames, Statistics
 using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles, get_default_system_parameters
 
-export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations
+export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations, solve_slac_operations
 export save_operational_results, calculate_profits_and_save, compute_pmr
 
 # =============================================================================
@@ -749,6 +749,235 @@ function compute_pmr(operational_results, generators, battery, capacities, batte
     end
     
     return pmr
+end
+
+# =============================================================================
+# 4. SLAC OPERATIONS (Stochastic LAC)
+# =============================================================================
+
+"""
+    solve_slac_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap;
+                         lookahead_hours=24, output_dir="results", scenario_weights=nothing)
+
+Solve SLAC operations with stochastic scenario-based optimization instead of mean forecasts.
+SLAC optimizes over scenarios with probabilistic weights rather than taking means like DLAC-i.
+
+Args:
+- scenario_weights: Vector of weights for each scenario (default: equal weights)
+- Other args same as DLAC-i
+"""
+function solve_slac_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap,
+                              profiles::SystemProfiles; lookahead_hours=24, output_dir="results", 
+                              scenario_weights=nothing)
+    params = profiles.params
+    
+    # Get actual profiles and scenarios
+    actual_demand = profiles.actual_demand
+    actual_wind = profiles.actual_wind
+    nuclear_availability = profiles.actual_nuclear_availability
+    gas_availability = profiles.actual_gas_availability
+    demand_scenarios = profiles.demand_scenarios
+    wind_scenarios = profiles.wind_scenarios
+    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
+    gas_avail_scenarios = profiles.gas_availability_scenarios
+    
+    T = params.hours
+    G = length(generators)
+    S = length(demand_scenarios)
+    
+    # Set default equal weights if not provided
+    if scenario_weights === nothing
+        scenario_weights = fill(1.0/S, S)
+    else
+        # Normalize weights to sum to 1
+        scenario_weights = scenario_weights ./ sum(scenario_weights)
+    end
+    
+    println("Solving SLAC Operations with $(lookahead_hours)-hour lookahead for $T hours")
+    println("  Using actual values for current period, scenario optimization for lookahead")
+    println("  Number of scenarios: $S, weights: $(round.(scenario_weights, digits=3))")
+    
+    # Initialize result storage
+    generation_schedule = zeros(G, T)
+    generation_flex_schedule = zeros(G, T)
+    battery_charge_schedule = zeros(T)
+    battery_discharge_schedule = zeros(T)
+    battery_soc_schedule = zeros(T)
+    load_shed_schedule = zeros(T)
+    load_shed_fixed_schedule = zeros(T)
+    load_shed_flex_schedule = zeros(T)
+    prices = zeros(T)
+    
+    # State tracking
+    current_soc = battery_energy_cap * 0.5
+    
+    # Rolling horizon optimization
+    for t in 1:T
+        if t % 100 == 0
+            println("  Processing hour $t/$T")
+        end
+        
+        # Determine lookahead horizon
+        horizon_end = min(t + lookahead_hours - 1, T)
+        horizon = t:horizon_end
+        H = length(horizon)
+        
+        # Create optimization model for current horizon with scenario constraints
+        model = Model(Gurobi.Optimizer)
+        set_silent(model)
+        
+        # Decision variables for lookahead horizon and scenarios
+        @variable(model, p̃[1:G, 1:H, 1:S] >= 0)        # Generation for fixed demand by scenario
+        @variable(model, p̃_flex[1:G, 1:H, 1:S] >= 0)   # Generation for flexible demand by scenario
+        @variable(model, p̃_ch[1:H, 1:S] >= 0)           # Battery charging by scenario
+        @variable(model, p̃_dis[1:H, 1:S] >= 0)          # Battery discharging by scenario
+        @variable(model, s̃oc[1:H, 1:S] >= 0)            # Battery SOC by scenario
+        @variable(model, δ̃_d_fixed[1:H, 1:S] >= 0)       # Fixed demand load shedding by scenario
+        @variable(model, δ̃_d_flex[1:H, 1:S] >= 0)        # Flexible demand load shedding by scenario
+        
+        # First-stage variables (non-anticipative - same across scenarios for period t)
+        @variable(model, x_p[1:G] >= 0)                   # First-period generation (fixed demand)
+        @variable(model, x_p_flex[1:G] >= 0)              # First-period generation (flexible demand)
+        @variable(model, x_ch >= 0)                       # First-period charging
+        @variable(model, x_dis >= 0)                      # First-period discharging
+        @variable(model, x_soc >= 0)                      # First-period SOC
+        @variable(model, x_shed_fixed >= 0)               # First-period fixed load shedding
+        @variable(model, x_shed_flex >= 0)                # First-period flexible load shedding
+        
+        # Objective: Minimize expected cost over scenarios
+        scenario_costs = []
+        for s in 1:S
+            scenario_cost = sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p̃[g,τ,s] + p̃_flex[g,τ,s]) for g in 1:G) +
+                              battery.var_om_cost * (p̃_ch[τ,s] + p̃_dis[τ,s]) +
+                              params.load_shed_penalty * (δ̃_d_fixed[τ,s] + 0.5 * δ̃_d_flex[τ,s]^2 / params.flex_demand_mw)
+                              for τ in 1:H)
+            push!(scenario_costs, scenario_cost)
+        end
+        
+        @objective(model, Min, sum(scenario_weights[s] * scenario_costs[s] for s in 1:S))
+        
+        # Non-anticipativity constraints: first-period decisions must be the same across scenarios
+        for s in 1:S
+            @constraint(model, [g=1:G], p̃[g,1,s] == x_p[g])
+            @constraint(model, [g=1:G], p̃_flex[g,1,s] == x_p_flex[g])
+            @constraint(model, p̃_ch[1,s] == x_ch)
+            @constraint(model, p̃_dis[1,s] == x_dis)
+            @constraint(model, s̃oc[1,s] == x_soc)
+            @constraint(model, δ̃_d_fixed[1,s] == x_shed_fixed)
+            @constraint(model, δ̃_d_flex[1,s] == x_shed_flex)
+        end
+        
+        # Scenario-specific constraints
+        for s in 1:S
+            # Power balance constraints for each scenario
+            for τ in 1:H
+                demand_value = (τ == 1) ? actual_demand[t] : demand_scenarios[s][horizon[τ]]
+                @constraint(model, 
+                    sum(p̃[g,τ,s] for g in 1:G) + p̃_dis[τ,s] - p̃_ch[τ,s] + 
+                    sum(p̃_flex[g,τ,s] for g in 1:G) + δ̃_d_fixed[τ,s] + δ̃_d_flex[τ,s] == 
+                    demand_value + params.flex_demand_mw)
+            end
+            
+            # Flexible demand constraints
+            @constraint(model, [τ=1:H], sum(p̃_flex[g,τ,s] for g in 1:G) + δ̃_d_flex[τ,s] == params.flex_demand_mw)
+            
+            # Generation constraints with scenario-specific availability factors
+            for g in 1:G
+                for τ in 1:H
+                    if generators[g].name == "Nuclear"
+                        avail = (τ == 1) ? nuclear_availability[t] : nuclear_avail_scenarios[s][horizon[τ]]
+                        @constraint(model, p̃[g,τ,s] + p̃_flex[g,τ,s] <= capacities[g] * avail)
+                    elseif generators[g].name == "Wind"
+                        avail = (τ == 1) ? actual_wind[t] : wind_scenarios[s][horizon[τ]]
+                        @constraint(model, p̃[g,τ,s] + p̃_flex[g,τ,s] <= capacities[g] * avail)
+                    elseif generators[g].name == "Gas"
+                        avail = (τ == 1) ? gas_availability[t] : gas_avail_scenarios[s][horizon[τ]]
+                        @constraint(model, p̃[g,τ,s] + p̃_flex[g,τ,s] <= capacities[g] * avail)
+                    else
+                        @constraint(model, p̃[g,τ,s] + p̃_flex[g,τ,s] <= capacities[g])
+                    end
+                end
+            end
+            
+            # Battery constraints for each scenario
+            @constraint(model, [τ=1:H], p̃_ch[τ,s] <= battery_power_cap)
+            @constraint(model, [τ=1:H], p̃_dis[τ,s] <= battery_power_cap)
+            @constraint(model, [τ=1:H], s̃oc[τ,s] <= battery_energy_cap)
+            
+            # Battery SOC dynamics for each scenario
+            @constraint(model, s̃oc[1,s] == current_soc + 
+                battery.efficiency_charge * p̃_ch[1,s] - p̃_dis[1,s]/battery.efficiency_discharge)
+            @constraint(model, [τ=2:H], s̃oc[τ,s] == s̃oc[τ-1,s] + 
+                battery.efficiency_charge * p̃_ch[τ,s] - p̃_dis[τ,s]/battery.efficiency_discharge)
+        end
+        
+        optimize!(model)
+        
+        if termination_status(model) == MOI.OPTIMAL
+            # Store first-period decisions (non-anticipative)
+            generation_schedule[:, t] = value.(x_p)
+            generation_flex_schedule[:, t] = value.(x_p_flex)
+            battery_charge_schedule[t] = value(x_ch)
+            battery_discharge_schedule[t] = value(x_dis)
+            battery_soc_schedule[t] = value(x_soc)
+            load_shed_schedule[t] = value(x_shed_fixed) + value(x_shed_flex)
+            load_shed_fixed_schedule[t] = value(x_shed_fixed)
+            load_shed_flex_schedule[t] = value(x_shed_flex)
+            
+            # Calculate expected price across scenarios (weighted average of dual prices)
+            scenario_prices = []
+            for s in 1:S
+                # Get dual price from power balance constraint for first period of this scenario
+                try
+                    scenario_price = dual(constraint_by_name(model, "power_balance_1_$s"))
+                    push!(scenario_prices, scenario_price)
+                catch
+                    # Fallback if dual retrieval fails
+                    push!(scenario_prices, params.load_shed_penalty * 0.1)
+                end
+            end
+            prices[t] = sum(scenario_weights[s] * scenario_prices[s] for s in 1:S)
+            
+            # Update SOC state for next iteration
+            current_soc = value(x_soc)
+        else
+            println("Warning: SLAC optimization failed at hour $t")
+            load_shed_schedule[t] = actual_demand[t]
+            prices[t] = params.load_shed_penalty
+        end
+    end
+    
+    result = Dict(
+        "status" => "optimal",
+        "model_type" => "SLAC",
+        "generation" => generation_schedule,
+        "generation_flex" => generation_flex_schedule,
+        "battery_charge" => battery_charge_schedule,
+        "battery_discharge" => battery_discharge_schedule,
+        "battery_soc" => battery_soc_schedule,
+        "load_shed" => load_shed_schedule,
+        "load_shed_fixed" => load_shed_fixed_schedule,
+        "load_shed_flex" => load_shed_flex_schedule,
+        "commitment" => ones(G, T),
+        "startup" => zeros(G, T),
+        "prices" => prices,
+        "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
+                               (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
+                               battery.var_om_cost * (battery_charge_schedule[t] + battery_discharge_schedule[t]) +
+                               params.load_shed_penalty * (load_shed_fixed_schedule[t] + 
+                               0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
+        "scenario_weights" => scenario_weights
+    )
+    
+    save_operational_results(result, generators, battery, "slac", output_dir)
+    
+    println("SLAC Operations Summary:")
+    println("  Total operational cost: \$$(round(result["total_cost"], digits=0))")
+    println("  Total load shed: $(round(sum(load_shed_schedule), digits=1)) MWh")
+    println("  Maximum price: \$$(round(maximum(prices), digits=2))/MWh")
+    println("  Scenario weights used: $(round.(scenario_weights, digits=3))")
+    
+    return result
 end
 
 end # module OptimizationModels
