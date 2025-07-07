@@ -56,7 +56,7 @@ end
 """
     plot_price_duration_curves(price_results; save_path=nothing)
 
-Plot price duration curves for all models including capacity expansion.
+Plot price duration curves for all models (Perfect Foresight, DLAC-i, SLAC).
 """
 function plot_price_duration_curves(price_results; save_path=nothing)
     p = plot(title="Price Duration Curves Comparison", 
@@ -88,12 +88,12 @@ function plot_price_duration_curves(price_results; save_path=nothing)
 end
 
 """
-    plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; save_path=nothing)
+    plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_path=nothing)
 
 Create comprehensive price analysis with time series and duration curves.
 """
-function plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; save_path=nothing)
-    T = length(cem_prices)
+function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_path=nothing)
+    T = length(pf_prices)
     hours = 1:T
     
     # Time series comparison
@@ -103,9 +103,9 @@ function plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; save_p
               size=(1200, 400),
               legend=:topright)
     
-    plot!(p1, hours, cem_prices, label="Capacity Expansion", lw=2, color=:blue)
     plot!(p1, hours, pf_prices, label="Perfect Foresight", lw=2, color=:red, linestyle=:dash)
     plot!(p1, hours, dlac_prices, label="DLAC-i", lw=2, color=:green, linestyle=:dot)
+    plot!(p1, hours, slac_prices, label="SLAC", lw=2, color=:blue)
     
     # Duration curves
     p2 = plot(title="Price Duration Curves", 
@@ -114,13 +114,13 @@ function plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; save_p
               size=(1200, 400),
               legend=:topright)
     
-    sorted_cem = sort(cem_prices, rev=true)
     sorted_pf = sort(pf_prices, rev=true)
     sorted_dlac = sort(dlac_prices, rev=true)
+    sorted_slac = sort(slac_prices, rev=true)
     
-    plot!(p2, hours, sorted_cem, label="Capacity Expansion", lw=2, color=:blue)
     plot!(p2, hours, sorted_pf, label="Perfect Foresight", lw=2, color=:red, linestyle=:dash)
     plot!(p2, hours, sorted_dlac, label="DLAC-i", lw=2, color=:green, linestyle=:dot)
+    plot!(p2, hours, sorted_slac, label="SLAC", lw=2, color=:blue)
     
     # Price difference analysis
     p3 = plot(title="Price Differences from Perfect Foresight", 
@@ -129,8 +129,8 @@ function plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; save_p
               size=(1200, 400),
               legend=:topright)
     
-    plot!(p3, hours, cem_prices - pf_prices, label="CEM - PF", lw=2, color=:blue)
     plot!(p3, hours, dlac_prices - pf_prices, label="DLAC-i - PF", lw=2, color=:green)
+    plot!(p3, hours, slac_prices - pf_prices, label="SLAC - PF", lw=2, color=:blue)
     hline!(p3, [0], color=:black, linestyle=:dash, alpha=0.5, label="Zero Difference")
     
     # Combine all plots
@@ -388,33 +388,33 @@ function plot_battery_soc_comparison(battery_results, model_names; save_path=not
 end
 
 """
-    save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
+    save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
 
 Save detailed price analysis to CSV files.
 """
-function save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
-    T = length(cem_prices)
+function save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
+    T = length(pf_prices)
     
     # Detailed price analysis
     price_analysis_df = DataFrame(
         Hour = 1:T,
-        CEM_Price = cem_prices,
         PF_Price = pf_prices,
         DLAC_i_Price = dlac_prices,
-        CEM_vs_PF_Diff = cem_prices - pf_prices,
+        SLAC_Price = slac_prices,
         DLAC_i_vs_PF_Diff = dlac_prices - pf_prices,
-        CEM_vs_DLAC_i_Diff = cem_prices - dlac_prices
+        SLAC_vs_PF_Diff = slac_prices - pf_prices,
+        SLAC_vs_DLAC_i_Diff = slac_prices - dlac_prices
     )
     CSV.write(joinpath(output_dir, "comprehensive_price_analysis.csv"), price_analysis_df)
     
     # Price statistics summary
     price_stats_df = DataFrame(
-        Model = ["Capacity_Expansion", "Perfect_Foresight", "DLAC_i"],
-        Mean_Price = [mean(cem_prices), mean(pf_prices), mean(dlac_prices)],
-        Max_Price = [maximum(cem_prices), maximum(pf_prices), maximum(dlac_prices)],
-        Min_Price = [minimum(cem_prices), minimum(pf_prices), minimum(dlac_prices)],
-        Std_Price = [std(cem_prices), std(pf_prices), std(dlac_prices)],
-        Price_Volatility = [std(cem_prices)/mean(cem_prices), std(pf_prices)/mean(pf_prices), std(dlac_prices)/mean(dlac_prices)]
+        Model = ["Perfect_Foresight", "DLAC_i", "SLAC"],
+        Mean_Price = [mean(pf_prices), mean(dlac_prices), mean(slac_prices)],
+        Max_Price = [maximum(pf_prices), maximum(dlac_prices), maximum(slac_prices)],
+        Min_Price = [minimum(pf_prices), minimum(dlac_prices), minimum(slac_prices)],
+        Std_Price = [std(pf_prices), std(dlac_prices), std(slac_prices)],
+        Price_Volatility = [std(pf_prices)/mean(pf_prices), std(dlac_prices)/mean(dlac_prices), std(slac_prices)/mean(slac_prices)]
     )
     CSV.write(joinpath(output_dir, "price_statistics_summary.csv"), price_stats_df)
     
@@ -422,52 +422,52 @@ function save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
 end
 
 """
-    generate_all_plots(cem_result, pf_result, dlac_result, profiles::SystemProfiles,
+    generate_all_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
                       generators, battery, optimal_capacities, optimal_battery_power, output_dir)
 
 Generate all comprehensive plots for the system analysis using SystemProfiles.
 """
-function generate_all_plots(cem_result, pf_result, dlac_result, profiles::SystemProfiles,
+function generate_all_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
                            generators, battery, optimal_capacities, optimal_battery_power, output_dir)
     plots_dir = joinpath(output_dir, "plots")
     mkpath(plots_dir)
     
     try
         # Extract prices
-        cem_prices = cem_result["prices"]
         pf_prices = pf_result["prices"]
         dlac_prices = dlac_result["prices"]
+        slac_prices = slac_result["prices"]
         
         # Individual price time series
-        plot_price_time_series(cem_prices, "Capacity Expansion"; 
-                              save_path=joinpath(plots_dir, "cem_price_time_series.png"))
         plot_price_time_series(pf_prices, "Perfect Foresight"; 
                               save_path=joinpath(plots_dir, "pf_price_time_series.png"))
         plot_price_time_series(dlac_prices, "DLAC-i"; 
                               save_path=joinpath(plots_dir, "dlac_i_price_time_series.png"))
+        plot_price_time_series(slac_prices, "SLAC"; 
+                              save_path=joinpath(plots_dir, "slac_price_time_series.png"))
         
         # Price duration curves (all models)
         price_results = [
-            ("Capacity Expansion", cem_prices),
             ("Perfect Foresight", pf_prices),
-            ("DLAC-i", dlac_prices)
+            ("DLAC-i", dlac_prices),
+            ("SLAC", slac_prices)
         ]
         plot_price_duration_curves(price_results; 
                                   save_path=joinpath(plots_dir, "price_duration_curves.png"))
         
         # Combined comprehensive price analysis
-        plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; 
+        plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; 
                                     save_path=joinpath(plots_dir, "comprehensive_price_analysis.png"))
         
         # Generation stacks
         generation_results = [
-            ("Capacity Expansion", cem_result["generation"]),
             ("Perfect Foresight", pf_result["generation"]),
-            ("DLAC-i", dlac_result["generation"])
+            ("DLAC-i", dlac_result["generation"]),
+            ("SLAC", slac_result["generation"])
         ]
         
         battery_discharge_results = Dict(
-            "Capacity Expansion" => cem_result["battery_discharge"],
+            "SLAC" => slac_result["battery_discharge"],
             "Perfect Foresight" => pf_result["battery_discharge"],
             "DLAC-i" => dlac_result["battery_discharge"]
         )
@@ -477,10 +477,10 @@ function generate_all_plots(cem_result, pf_result, dlac_result, profiles::System
         
         # Battery operations plots
         battery_detailed_results = Dict(
-            "Capacity Expansion" => Dict(
-                "charge" => cem_result["battery_charge"],
-                "discharge" => cem_result["battery_discharge"],
-                "soc" => cem_result["battery_soc"]
+            "SLAC" => Dict(
+                "charge" => slac_result["battery_charge"],
+                "discharge" => slac_result["battery_discharge"],
+                "soc" => slac_result["battery_soc"]
             ),
             "Perfect Foresight" => Dict(
                 "charge" => pf_result["battery_charge"],
@@ -494,7 +494,7 @@ function generate_all_plots(cem_result, pf_result, dlac_result, profiles::System
             )
         )
         
-        model_names = ["Capacity Expansion", "Perfect Foresight", "DLAC-i"]
+        model_names = ["Perfect Foresight", "DLAC-i", "SLAC"]
         
         # Plot battery operations (charge/discharge)
         plot_battery_operations(battery_detailed_results, model_names;
@@ -512,7 +512,7 @@ function generate_all_plots(cem_result, pf_result, dlac_result, profiles::System
                                 save_path=joinpath(plots_dir, "capacity_comparison.png"))
         
         # Save price analysis to CSV
-        save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
+        save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
         
         println("All plots generated successfully in: $plots_dir")
         
@@ -526,13 +526,13 @@ function generate_all_plots(cem_result, pf_result, dlac_result, profiles::System
 end
 
 """
-    generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
+    generate_all_plots(pf_result, dlac_result, slac_result, actual_demand, actual_wind,
                       nuclear_availability, gas_availability, generators, battery,
                       optimal_capacities, optimal_battery_power, output_dir)
 
 Generate all comprehensive plots (legacy method for backwards compatibility).
 """
-function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, actual_wind,
+function generate_all_plots(pf_result, dlac_result, slac_result, actual_demand, actual_wind,
                            nuclear_availability, gas_availability, generators, battery,
                            optimal_capacities, optimal_battery_power, output_dir)
     plots_dir = joinpath(output_dir, "plots")
@@ -540,40 +540,40 @@ function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, a
     
     try
         # Extract prices
-        cem_prices = cem_result["prices"]
         pf_prices = pf_result["prices"]
         dlac_prices = dlac_result["prices"]
+        slac_prices = slac_result["prices"]
         
         # Individual price time series
-        plot_price_time_series(cem_prices, "Capacity Expansion"; 
-                              save_path=joinpath(plots_dir, "cem_price_time_series.png"))
         plot_price_time_series(pf_prices, "Perfect Foresight"; 
                               save_path=joinpath(plots_dir, "pf_price_time_series.png"))
         plot_price_time_series(dlac_prices, "DLAC-i"; 
                               save_path=joinpath(plots_dir, "dlac_i_price_time_series.png"))
+        plot_price_time_series(slac_prices, "SLAC"; 
+                              save_path=joinpath(plots_dir, "slac_price_time_series.png"))
         
         # Price duration curves (all models)
         price_results = [
-            ("Capacity Expansion", cem_prices),
             ("Perfect Foresight", pf_prices),
-            ("DLAC-i", dlac_prices)
+            ("DLAC-i", dlac_prices),
+            ("SLAC", slac_prices)
         ]
         plot_price_duration_curves(price_results; 
                                   save_path=joinpath(plots_dir, "price_duration_curves.png"))
         
         # Combined comprehensive price analysis
-        plot_combined_price_analysis(cem_prices, pf_prices, dlac_prices; 
+        plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; 
                                     save_path=joinpath(plots_dir, "comprehensive_price_analysis.png"))
         
         # Generation stacks
         generation_results = [
-            ("Capacity Expansion", cem_result["generation"]),
             ("Perfect Foresight", pf_result["generation"]),
-            ("DLAC-i", dlac_result["generation"])
+            ("DLAC-i", dlac_result["generation"]),
+            ("SLAC", slac_result["generation"])
         ]
         
         battery_discharge_results = Dict(
-            "Capacity Expansion" => cem_result["battery_discharge"],
+            "SLAC" => slac_result["battery_discharge"],
             "Perfect Foresight" => pf_result["battery_discharge"],
             "DLAC-i" => dlac_result["battery_discharge"]
         )
@@ -583,10 +583,10 @@ function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, a
         
         # Battery operations plots
         battery_detailed_results = Dict(
-            "Capacity Expansion" => Dict(
-                "charge" => cem_result["battery_charge"],
-                "discharge" => cem_result["battery_discharge"],
-                "soc" => cem_result["battery_soc"]
+            "SLAC" => Dict(
+                "charge" => slac_result["battery_charge"],
+                "discharge" => slac_result["battery_discharge"],
+                "soc" => slac_result["battery_soc"]
             ),
             "Perfect Foresight" => Dict(
                 "charge" => pf_result["battery_charge"],
@@ -600,7 +600,7 @@ function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, a
             )
         )
         
-        model_names = ["Capacity Expansion", "Perfect Foresight", "DLAC-i"]
+        model_names = ["Perfect Foresight", "DLAC-i", "SLAC"]
         
         # Plot battery operations (charge/discharge)
         plot_battery_operations(battery_detailed_results, model_names;
@@ -619,7 +619,7 @@ function generate_all_plots(cem_result, pf_result, dlac_result, actual_demand, a
                                 save_path=joinpath(plots_dir, "capacity_comparison.png"))
         
         # Save price analysis to CSV
-        save_price_analysis(cem_prices, pf_prices, dlac_prices, output_dir)
+        save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
         
         println("All plots generated successfully in: $plots_dir")
         

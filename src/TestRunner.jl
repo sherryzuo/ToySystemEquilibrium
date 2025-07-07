@@ -114,7 +114,25 @@ function run_complete_test_system(; params=nothing, output_dir="results")
     
     println("✅ DLAC-i Operations solved successfully!")
     
-    # STEP 4: Profit Analysis and PMR Calculation
+    # STEP 4: SLAC Operations
+    println("\n" * repeat("=", 25) * " SLAC OPERATIONS " * repeat("=", 29))
+    
+    slac_result = solve_slac_operations(generators, battery,
+                                       optimal_capacities,
+                                       optimal_battery_power,
+                                       optimal_battery_energy,
+                                       profiles;
+                                       lookahead_hours=24,
+                                       output_dir=output_dir)
+    
+    if slac_result["status"] != "optimal"
+        println("❌ SLAC Operations failed: $(slac_result["status"])")
+        return Dict("status" => "failed", "stage" => "SLAC", "result" => slac_result)
+    end
+    
+    println("✅ SLAC Operations solved successfully!")
+    
+    # STEP 5: Profit Analysis and PMR Calculation
     println("\n" * repeat("=", 25) * " PROFIT ANALYSIS " * repeat("=", 29))
     
     pf_profits = calculate_profits_and_save(generators, battery, pf_result,
@@ -125,27 +143,34 @@ function run_complete_test_system(; params=nothing, output_dir="results")
                                              optimal_capacities, optimal_battery_power, optimal_battery_energy,
                                              "dlac_i", output_dir)
     
+    slac_profits = calculate_profits_and_save(generators, battery, slac_result,
+                                             optimal_capacities, optimal_battery_power, optimal_battery_energy,
+                                             "slac", output_dir)
+    
     # Calculate PMRs
     pf_pmr = compute_pmr(pf_result, generators, battery, 
                         optimal_capacities, optimal_battery_power, optimal_battery_energy)
     dlac_pmr = compute_pmr(dlac_result, generators, battery,
                           optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    slac_pmr = compute_pmr(slac_result, generators, battery,
+                          optimal_capacities, optimal_battery_power, optimal_battery_energy)
     
     println("Perfect Foresight PMRs (%): $(round.(pf_pmr, digits=2))")
     println("DLAC-i PMRs (%): $(round.(dlac_pmr, digits=2))")
+    println("SLAC PMRs (%): $(round.(slac_pmr, digits=2))")
     
-    # STEP 5: Comprehensive Model Comparison
+    # STEP 6: Comprehensive Model Comparison
     println("\n" * repeat("=", 25) * " MODEL COMPARISON " * repeat("=", 28))
     
-    comparison_results = compare_models_analysis(cem_result, pf_result, dlac_result, 
+    comparison_results = compare_models_analysis(cem_result, pf_result, dlac_result, slac_result,
                                                generators, battery, optimal_capacities,
                                                optimal_battery_power, optimal_battery_energy,
                                                output_dir)
     
-    # STEP 6: Generate Comprehensive Plots
+    # STEP 7: Generate Comprehensive Plots
     println("\n" * repeat("=", 25) * " GENERATING PLOTS " * repeat("=", 28))
     
-    generate_all_plots(cem_result, pf_result, dlac_result, profiles,
+    generate_all_plots(pf_result, dlac_result, slac_result, profiles,
                       generators, battery, optimal_capacities, optimal_battery_power, output_dir)
     
     println("\nComplete test system finished successfully!")
@@ -156,6 +181,7 @@ function run_complete_test_system(; params=nothing, output_dir="results")
         "cem" => cem_result,
         "perfect_foresight" => pf_result,
         "dlac_i" => dlac_result,
+        "slac" => slac_result,
         "comparison" => comparison_results
     )
 end
@@ -200,12 +226,13 @@ end
 
 Comprehensive comparison analysis between the three models.
 """
-function compare_models_analysis(cem_result, pf_result, dlac_result, generators, battery,
+function compare_models_analysis(cem_result, pf_result, dlac_result, slac_result, generators, battery,
                                 optimal_capacities, optimal_battery_power, optimal_battery_energy, output_dir)
     
     # Calculate PMRs for each model
     pf_pmr = compute_pmr(pf_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
     dlac_pmr = compute_pmr(dlac_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    slac_pmr = compute_pmr(slac_result, generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
     
     # Three-model comparison
     n_technologies = length(generators) + 1  # +1 for battery
@@ -218,27 +245,34 @@ function compare_models_analysis(cem_result, pf_result, dlac_result, generators,
         Technology = tech_names,
         Capacity_MW = capacities_array,
         PF_PMR_Percent = pf_pmr,
-        DLAC_i_PMR_Percent = dlac_pmr
+        DLAC_i_PMR_Percent = dlac_pmr,
+        SLAC_PMR_Percent = slac_pmr
     )
     
     # Add summary costs as a separate DataFrame
     summary_df = DataFrame(
-        Model = ["CEM", "Perfect_Foresight", "DLAC_i"],
-        Total_Cost = [cem_result["total_cost"], pf_result["total_cost"], dlac_result["total_cost"]]
+        Model = ["CEM", "Perfect_Foresight", "DLAC_i", "SLAC"],
+        Total_Cost = [cem_result["total_cost"], pf_result["total_cost"], dlac_result["total_cost"], slac_result["total_cost"]]
     )
-    CSV.write(joinpath(output_dir, "three_model_comprehensive_comparison.csv"), comparison_df)
-    CSV.write(joinpath(output_dir, "three_model_cost_summary.csv"), summary_df)
+    CSV.write(joinpath(output_dir, "four_model_comprehensive_comparison.csv"), comparison_df)
+    CSV.write(joinpath(output_dir, "four_model_cost_summary.csv"), summary_df)
     
-    # Detailed PF vs DLAC-i comparison
+    # Detailed four-model comparison
     T = length(pf_result["prices"])
     detailed_comparison_df = DataFrame(
         Hour = 1:T,
         PF_Price = pf_result["prices"],
         DLAC_i_Price = dlac_result["prices"],
-        Price_Difference = dlac_result["prices"] - pf_result["prices"],
+        SLAC_Price = slac_result["prices"],
+        DLAC_PF_Price_Diff = dlac_result["prices"] - pf_result["prices"],
+        SLAC_PF_Price_Diff = slac_result["prices"] - pf_result["prices"],
+        SLAC_DLAC_Price_Diff = slac_result["prices"] - dlac_result["prices"],
         PF_Load_Shed = pf_result["load_shed"],
         DLAC_i_Load_Shed = dlac_result["load_shed"],
-        Load_Shed_Difference = dlac_result["load_shed"] - pf_result["load_shed"]
+        SLAC_Load_Shed = slac_result["load_shed"],
+        DLAC_PF_Load_Shed_Diff = dlac_result["load_shed"] - pf_result["load_shed"],
+        SLAC_PF_Load_Shed_Diff = slac_result["load_shed"] - pf_result["load_shed"],
+        SLAC_DLAC_Load_Shed_Diff = slac_result["load_shed"] - dlac_result["load_shed"]
     )
     
     # Add generation differences
@@ -248,7 +282,7 @@ function compare_models_analysis(cem_result, pf_result, dlac_result, generators,
         detailed_comparison_df[!, "$(gen.name)_Gen_Diff"] = dlac_result["generation"][g, :] - pf_result["generation"][g, :]
     end
     
-    CSV.write(joinpath(output_dir, "pf_vs_dlac_i_comprehensive_comparison.csv"), detailed_comparison_df)
+    CSV.write(joinpath(output_dir, "four_model_detailed_comparison.csv"), detailed_comparison_df)
     
     # Summary statistics
     summary_stats = DataFrame(
