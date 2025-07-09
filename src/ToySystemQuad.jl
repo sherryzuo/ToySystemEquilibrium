@@ -57,7 +57,7 @@ export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison, g
 # Equilibrium solver
 export EquilibriumParameters, solve_equilibrium, run_policy_equilibrium
 export save_equilibrium_results, analyze_equilibrium_convergence, resume_from_log
-export PolicyFunction, PerfectForesight, DLAC_i
+export PolicyFunction, PerfectForesight, DLAC_i, SLAC
 
 # Validation
 export validate_system_configuration, validate_profiles

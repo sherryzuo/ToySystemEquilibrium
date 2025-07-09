@@ -10,10 +10,49 @@ module PlottingModule
 using Plots, Statistics, CSV, DataFrames
 using ..SystemConfig: Generator, Battery, SystemProfiles
 
+# Paper-quality plotting settings optimized for half-page width
+function setup_paper_quality_plots()
+    # Use GR backend for better performance and quality
+    gr()
+    
+    # Set default plot attributes for half-page width readability
+    default(fontfamily="Times",
+            titlefontsize=16,    # Larger for visibility
+            labelfontsize=14,    # Larger for visibility
+            tickfontsize=12,     # Larger for visibility
+            legendfontsize=12,   # Larger for visibility
+            linewidth=2.5,       # Thicker lines for clarity
+            dpi=300,
+            background_color=:white,
+            foreground_color=:black,
+            grid=false,
+            framestyle=:box,
+            margin=8Plots.mm)    # More margin for readability
+end
+
+# Professional color palette (colorblind-friendly)
+const PAPER_COLORS = [
+    RGB(0.0, 0.4, 0.8),     # Blue
+    RGB(0.8, 0.2, 0.2),     # Red  
+    RGB(0.0, 0.6, 0.3),     # Green
+    RGB(0.9, 0.6, 0.0),     # Orange
+    RGB(0.6, 0.0, 0.8),     # Purple
+    RGB(0.4, 0.4, 0.4),     # Gray
+    RGB(0.8, 0.8, 0.0),     # Yellow
+    RGB(0.0, 0.8, 0.8)      # Cyan
+]
+
+# Line styles for different models
+const PAPER_LINESTYLES = [:solid, :dash, :dot, :dashdot]
+
+# Initialize paper quality settings
+setup_paper_quality_plots()
+
 export plot_price_time_series, plot_price_duration_curves, plot_combined_price_analysis
 export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison
 export plot_battery_operations, plot_battery_soc_comparison
 export generate_all_plots, save_price_analysis
+export plot_capacity_mix_differences, plot_capacity_mix_stacked, calculate_operational_results_comparison
 
 """
     plot_price_time_series(prices, model_name; save_path=nothing)
@@ -28,22 +67,24 @@ function plot_price_time_series(prices, model_name; save_path=nothing)
              title="Price Time Series - $model_name",
              xlabel="Hour", 
              ylabel="Price (\$/MWh)",
-             lw=2, 
-             size=(1200, 600),
-             legend=false)
+             color=PAPER_COLORS[1],
+             size=(8*72, 4*72),  # 8x4 inches at 72 DPI base
+             legend=false,
+             left_margin=8Plots.mm,
+             bottom_margin=8Plots.mm)
     
     # Add statistics annotations
     avg_price = mean(prices)
     max_price = maximum(prices)
     min_price = minimum(prices)
     
-    hline!([avg_price], color=:red, linestyle=:dash, alpha=0.7, 
+    hline!([avg_price], color=PAPER_COLORS[2], linestyle=:dash, alpha=0.8, 
            label="Average: \$$(round(avg_price, digits=2))/MWh")
     
     # Add text annotation with stats
     annotate!(T*0.7, max_price*0.9, 
              text("Avg: \$$(round(avg_price, digits=1))\nMax: \$$(round(max_price, digits=1))\nMin: \$$(round(min_price, digits=1))", 
-                  :left, 10))
+                  :left, 10, :black))
     
     if save_path !== nothing
         savefig(p, save_path)
@@ -62,11 +103,13 @@ function plot_price_duration_curves(price_results; save_path=nothing)
     p = plot(title="Price Duration Curves Comparison", 
              xlabel="Hours", 
              ylabel="Price (\$/MWh)",
-             size=(1000, 700), 
-             legend=:topright)
+             size=(8*72, 5*72),
+             legend=:topright,
+             left_margin=8Plots.mm,
+             bottom_margin=8Plots.mm)
     
-    colors = [:blue, :red, :green]
-    linestyles = [:solid, :dash, :dot]
+    colors = PAPER_COLORS[1:3]
+    linestyles = PAPER_LINESTYLES[1:3]
     
     for (i, (model_name, prices)) in enumerate(price_results)
         sorted_prices = sort(prices, rev=true)
@@ -74,7 +117,6 @@ function plot_price_duration_curves(price_results; save_path=nothing)
         
         plot!(p, hours, sorted_prices, 
               label=model_name, 
-              lw=2, 
               color=colors[i], 
               linestyle=linestyles[i])
     end
@@ -100,41 +142,47 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
     p1 = plot(title="Price Time Series Comparison", 
               xlabel="Hour", 
               ylabel="Price (\$/MWh)",
-              size=(1200, 400),
-              legend=:topright)
+              size=(8*72, 3*72),
+              legend=:topright,
+              left_margin=8Plots.mm,
+              bottom_margin=6Plots.mm)
     
-    plot!(p1, hours, pf_prices, label="Perfect Foresight", lw=2, color=:red, linestyle=:dash)
-    plot!(p1, hours, dlac_prices, label="DLAC-i", lw=2, color=:green, linestyle=:dot)
-    plot!(p1, hours, slac_prices, label="SLAC", lw=2, color=:blue)
+    plot!(p1, hours, pf_prices, label="Perfect Foresight", color=PAPER_COLORS[2], linestyle=:dash)
+    plot!(p1, hours, dlac_prices, label="DLAC-i", color=PAPER_COLORS[3], linestyle=:dot)
+    plot!(p1, hours, slac_prices, label="SLAC", color=PAPER_COLORS[1], linestyle=:solid)
     
     # Duration curves
     p2 = plot(title="Price Duration Curves", 
               xlabel="Hours", 
               ylabel="Price (\$/MWh)",
-              size=(1200, 400),
-              legend=:topright)
+              size=(8*72, 3*72),
+              legend=:topright,
+              left_margin=8Plots.mm,
+              bottom_margin=6Plots.mm)
     
     sorted_pf = sort(pf_prices, rev=true)
     sorted_dlac = sort(dlac_prices, rev=true)
     sorted_slac = sort(slac_prices, rev=true)
     
-    plot!(p2, hours, sorted_pf, label="Perfect Foresight", lw=2, color=:red, linestyle=:dash)
-    plot!(p2, hours, sorted_dlac, label="DLAC-i", lw=2, color=:green, linestyle=:dot)
-    plot!(p2, hours, sorted_slac, label="SLAC", lw=2, color=:blue)
+    plot!(p2, hours, sorted_pf, label="Perfect Foresight", color=PAPER_COLORS[2], linestyle=:dash)
+    plot!(p2, hours, sorted_dlac, label="DLAC-i", color=PAPER_COLORS[3], linestyle=:dot)
+    plot!(p2, hours, sorted_slac, label="SLAC", color=PAPER_COLORS[1], linestyle=:solid)
     
     # Price difference analysis
     p3 = plot(title="Price Differences from Perfect Foresight", 
               xlabel="Hour", 
               ylabel="Price Difference (\$/MWh)",
-              size=(1200, 400),
-              legend=:topright)
+              size=(8*72, 3*72),
+              legend=:topright,
+              left_margin=8Plots.mm,
+              bottom_margin=6Plots.mm)
     
-    plot!(p3, hours, dlac_prices - pf_prices, label="DLAC-i - PF", lw=2, color=:green)
-    plot!(p3, hours, slac_prices - pf_prices, label="SLAC - PF", lw=2, color=:blue)
-    hline!(p3, [0], color=:black, linestyle=:dash, alpha=0.5, label="Zero Difference")
+    plot!(p3, hours, dlac_prices - pf_prices, label="DLAC-i - PF", color=PAPER_COLORS[3])
+    plot!(p3, hours, slac_prices - pf_prices, label="SLAC - PF", color=PAPER_COLORS[1])
+    hline!(p3, [0], color=:black, linestyle=:dash, alpha=0.7, label="Zero Difference")
     
     # Combine all plots
-    combined_plot = plot(p1, p2, p3, layout=(3,1), size=(1200, 1200))
+    combined_plot = plot(p1, p2, p3, layout=(3,1), size=(8*72, 9*72))
     
     if save_path !== nothing
         savefig(combined_plot, save_path)
@@ -156,14 +204,16 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
         T = size(generation, 2)
         hours = 1:T
         
-        # Technology colors
-        colors = [:red, :green, :orange, :purple]  # Nuclear, Wind, Gas, Battery
+        # Technology colors - use paper-quality palette
+        colors = PAPER_COLORS[1:4]  # Nuclear, Wind, Gas, Battery
         
         p = plot(title="Generation Stack - $model_name", 
                  xlabel="Hour", 
                  ylabel="Power (MW)",
-                 size=(1000, 500), 
-                 legend=:outertopleft)
+                 size=(6*72, 4*72),  # Optimized for half-page width
+                 legend=:outertopleft,
+                 left_margin=10Plots.mm,
+                 bottom_margin=10Plots.mm)
         
         # Plot stacked generation
         cumulative = zeros(T)
@@ -183,16 +233,16 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
         end
         
         # Add demand line
-        plot!(p, hours, demand, label="Demand", color=:black, lw=3, linestyle=:dash)
+        plot!(p, hours, demand, label="Demand", color=:black, linewidth=3, linestyle=:dash)
         
         push!(plots_list, p)
     end
     
     # Combine all generation stacks
     if length(plots_list) == 3
-        combined_plot = plot(plots_list..., layout=(3,1), size=(1000, 1500))
+        combined_plot = plot(plots_list..., layout=(3,1), size=(6*72, 12*72))
     else
-        combined_plot = plot(plots_list..., layout=(length(plots_list),1), size=(1000, 500*length(plots_list)))
+        combined_plot = plot(plots_list..., layout=(length(plots_list),1), size=(6*72, 4*72*length(plots_list)))
     end
     
     if save_path !== nothing
@@ -212,20 +262,20 @@ function plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
     T = length(profiles.actual_demand)
     hours = 1:T
     
-    # Create subplots
+    # Create subplots with paper-quality styling
     p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
-              lw=2, color=:blue, legend=false)
+              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p2 = plot(hours, profiles.actual_wind, title="Wind Capacity Factor", xlabel="Hour", ylabel="Capacity Factor",
-              lw=2, color=:green, legend=false, ylims=(0, 1))
+              color=PAPER_COLORS[3], legend=false, ylims=(0, 1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p3 = plot(hours, profiles.actual_nuclear_availability, title="Nuclear Availability", xlabel="Hour", ylabel="Available",
-              lw=2, color=:red, legend=false, ylims=(0, 1.1))
+              color=PAPER_COLORS[2], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p4 = plot(hours, profiles.actual_gas_availability, title="Gas Availability", xlabel="Hour", ylabel="Available",
-              lw=2, color=:orange, legend=false, ylims=(0, 1.1))
+              color=PAPER_COLORS[4], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
-    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(1200, 800))
+    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(8*72, 6*72))
     
     if save_path !== nothing
         savefig(combined_plot, save_path)
@@ -244,20 +294,20 @@ function plot_system_profiles(actual_demand, actual_wind, nuclear_availability, 
     T = length(actual_demand)
     hours = 1:T
     
-    # Create subplots
+    # Create subplots with paper-quality styling
     p1 = plot(hours, actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
-              lw=2, color=:blue, legend=false)
+              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p2 = plot(hours, actual_wind, title="Wind Capacity Factor", xlabel="Hour", ylabel="Capacity Factor",
-              lw=2, color=:green, legend=false, ylims=(0, 1))
+              color=PAPER_COLORS[3], legend=false, ylims=(0, 1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p3 = plot(hours, nuclear_availability, title="Nuclear Availability", xlabel="Hour", ylabel="Available",
-              lw=2, color=:red, legend=false, ylims=(0, 1.1))
+              color=PAPER_COLORS[2], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p4 = plot(hours, gas_availability, title="Gas Availability", xlabel="Hour", ylabel="Available",
-              lw=2, color=:orange, legend=false, ylims=(0, 1.1))
+              color=PAPER_COLORS[4], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
-    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(1200, 800))
+    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(8*72, 6*72))
     
     if save_path !== nothing
         savefig(combined_plot, save_path)
@@ -277,7 +327,7 @@ function plot_capacity_comparison(generators, battery, optimal_capacities, optim
     push!(tech_names, "Battery")
     
     capacities = [optimal_capacities; optimal_battery_power]
-    colors = [:red, :green, :orange, :purple]
+    colors = PAPER_COLORS[1:length(capacities)]
     
     p = bar(tech_names, capacities,
             title="Optimal Capacity Investments",
@@ -285,11 +335,13 @@ function plot_capacity_comparison(generators, battery, optimal_capacities, optim
             ylabel="Capacity (MW)",
             color=colors,
             legend=false,
-            size=(800, 600))
+            size=(6*72, 4*72),
+            left_margin=10Plots.mm,
+            bottom_margin=10Plots.mm)
     
     # Add capacity values on top of bars
     for (i, cap) in enumerate(capacities)
-        annotate!(i, cap + maximum(capacities)*0.02, text("$(round(cap, digits=1)) MW", :center, 8))
+        annotate!(i, cap + maximum(capacities)*0.02, text("$(round(cap, digits=1)) MW", :center, 12, :black))
     end
     
     if save_path !== nothing
@@ -307,7 +359,7 @@ Plot battery charge/discharge operations for all models.
 """
 function plot_battery_operations(battery_results, model_names; save_path=nothing)
     plots_list = []
-    colors = [:blue, :red, :green]
+    colors = PAPER_COLORS[1:3]
     
     for (i, model_name) in enumerate(model_names)
         if haskey(battery_results, model_name)
@@ -319,8 +371,10 @@ function plot_battery_operations(battery_results, model_names; save_path=nothing
             p = plot(title="Battery Operations - $model_name",
                     xlabel="Hour",
                     ylabel="Power (MW)",
-                    size=(1000, 400),
-                    legend=:topright)
+                    size=(6*72, 3*72),
+                    legend=:topright,
+                    left_margin=8Plots.mm,
+                    bottom_margin=8Plots.mm)
             
             # Plot charging (negative values)
             plot!(p, hours, -charge, label="Charging", color=colors[i], alpha=0.7, fillrange=0)
@@ -337,9 +391,9 @@ function plot_battery_operations(battery_results, model_names; save_path=nothing
     
     # Combine all battery operation plots
     if length(plots_list) == 3
-        combined_plot = plot(plots_list..., layout=(3,1), size=(1000, 1200))
+        combined_plot = plot(plots_list..., layout=(3,1), size=(6*72, 9*72))
     else
-        combined_plot = plot(plots_list..., layout=(length(plots_list),1), size=(1000, 400*length(plots_list)))
+        combined_plot = plot(plots_list..., layout=(length(plots_list),1), size=(6*72, 3*72*length(plots_list)))
     end
     
     if save_path !== nothing
@@ -356,14 +410,16 @@ end
 Plot battery state of charge comparison across models.
 """
 function plot_battery_soc_comparison(battery_results, model_names; save_path=nothing)
-    colors = [:blue, :red, :green]
-    linestyles = [:solid, :dash, :dot]
+    colors = PAPER_COLORS[1:3]
+    linestyles = PAPER_LINESTYLES[1:3]
     
     p = plot(title="Battery State of Charge Comparison",
              xlabel="Hour",
              ylabel="SOC (MWh)",
-             size=(1200, 600),
-             legend=:topright)
+             size=(8*72, 4*72),
+             legend=:topright,
+             left_margin=10Plots.mm,
+             bottom_margin=10Plots.mm)
     
     for (i, model_name) in enumerate(model_names)
         if haskey(battery_results, model_name)
@@ -374,8 +430,7 @@ function plot_battery_soc_comparison(battery_results, model_names; save_path=not
             plot!(p, hours, soc,
                   label=model_name,
                   color=colors[i],
-                  linestyle=linestyles[i],
-                  linewidth=2)
+                  linestyle=linestyles[i])
         end
     end
     
@@ -630,6 +685,402 @@ function generate_all_plots(pf_result, dlac_result, slac_result, actual_demand, 
         println("Results are still available in CSV files")
         return false
     end
+end
+
+"""
+    plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothing)
+
+Plot capacity mix differences from equilibrium results for DLAC-i, SLAC, and Perfect Foresight policies.
+Uses the last row of equilibrium_log.csv files for each policy.
+"""
+function plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothing)
+    # Define paths to equilibrium log files
+    slac_path = joinpath(equilibrium_results_dir, "equilibrium", "slac", "equilibrium_log.csv")
+    dlac_path = joinpath(equilibrium_results_dir, "equilibrium", "dlac_i", "equilibrium_log.csv")
+    pf_path = joinpath(equilibrium_results_dir, "validation", "equilibrium", "perfectforesight", "equilibrium_log.csv")
+    
+    # Read the last row of each equilibrium log file
+    function read_last_row(filepath)
+        df = CSV.read(filepath, DataFrame)
+        return df[end, :]
+    end
+    
+    # Extract capacity data
+    slac_data = read_last_row(slac_path)
+    dlac_data = read_last_row(dlac_path)
+    pf_data = read_last_row(pf_path)
+    
+    # Technology names
+    tech_names = ["Nuclear", "Wind", "Gas", "Battery"]
+    
+    # Extract capacities (MW)
+    slac_capacities = [slac_data.Nuclear_capacity_MW, slac_data.Wind_capacity_MW, 
+                      slac_data.Gas_capacity_MW, slac_data.Battery_capacity_MW]
+    dlac_capacities = [dlac_data.Nuclear_capacity_MW, dlac_data.Wind_capacity_MW, 
+                      dlac_data.Gas_capacity_MW, dlac_data.Battery_capacity_MW]
+    pf_capacities = [pf_data.Nuclear_capacity_MW, pf_data.Wind_capacity_MW, 
+                    pf_data.Gas_capacity_MW, pf_data.Battery_capacity_MW]
+    
+    # Create grouped bar chart with publication-quality formatting
+    x_positions = 1:length(tech_names)
+    bar_width = 0.25
+    
+    p = plot(title="Equilibrium Capacity Mix by Policy",
+             xlabel="Technology",
+             ylabel="Installed Capacity (MW)",
+             size=(10*72, 7*72),  # Slightly taller for better proportions
+             legend=:topright,
+             left_margin=12Plots.mm,
+             bottom_margin=12Plots.mm,
+             top_margin=8Plots.mm,
+             right_margin=8Plots.mm)
+    
+    # Use distinct colors for better visibility
+    colors = [PAPER_COLORS[1], PAPER_COLORS[2], PAPER_COLORS[3]]  # Blue, Red, Green
+    
+    # Plot bars for each policy with better styling
+    bar!(p, x_positions .- bar_width, dlac_capacities, 
+         width=bar_width, label="DLAC-i", color=colors[1], alpha=0.85, 
+         linewidth=1, linecolor=colors[1])
+    bar!(p, x_positions, slac_capacities, 
+         width=bar_width, label="SLAC", color=colors[2], alpha=0.85,
+         linewidth=1, linecolor=colors[2])
+    bar!(p, x_positions .+ bar_width, pf_capacities, 
+         width=bar_width, label="Perfect Foresight", color=colors[3], alpha=0.85,
+         linewidth=1, linecolor=colors[3])
+    
+    # Set x-axis labels with better spacing
+    plot!(p, xticks=(x_positions, tech_names), xrotation=0)
+    
+    # Add grid for better readability
+    plot!(p, grid=true, gridwidth=1, gridcolor=:lightgray, gridalpha=0.5)
+    
+    # Add capacity values on top of bars with better formatting
+    for (i, tech) in enumerate(tech_names)
+        max_height = maximum([dlac_capacities[i], slac_capacities[i], pf_capacities[i]])
+        y_offset = max_height * 0.05  # 5% offset from top of bar
+        
+        # DLAC-i values
+        if dlac_capacities[i] > 0
+            annotate!(p, i - bar_width, dlac_capacities[i] + y_offset, 
+                     text("$(round(dlac_capacities[i], digits=0))", :center, 9, :black))
+        end
+        
+        # SLAC values
+        if slac_capacities[i] > 0
+            annotate!(p, i, slac_capacities[i] + y_offset, 
+                     text("$(round(slac_capacities[i], digits=0))", :center, 9, :black))
+        end
+        
+        # PF values
+        if pf_capacities[i] > 0
+            annotate!(p, i + bar_width, pf_capacities[i] + y_offset, 
+                     text("$(round(pf_capacities[i], digits=0))", :center, 9, :black))
+        end
+    end
+    
+    # Set y-axis to start from 0 and add some headroom
+    max_capacity = maximum([maximum(dlac_capacities), maximum(slac_capacities), maximum(pf_capacities)])
+    ylims!(p, 0, max_capacity * 1.15)
+    
+    # Add subtitle with key insights
+    total_dlac = sum(dlac_capacities)
+    total_slac = sum(slac_capacities)
+    total_pf = sum(pf_capacities)
+    
+    subtitle = "Total Capacity: DLAC-i $(round(total_dlac, digits=0)) MW, SLAC $(round(total_slac, digits=0)) MW, PF $(round(total_pf, digits=0)) MW"
+    plot!(p, title="Equilibrium Capacity Mix by Policy\n$(subtitle)", titlefontsize=14)
+    
+    if save_path !== nothing
+        savefig(p, save_path)
+        println("Capacity mix differences plot saved: $save_path")
+    end
+    
+    return p, Dict("DLAC-i" => dlac_capacities, "SLAC" => slac_capacities, "Perfect Foresight" => pf_capacities)
+end
+
+"""
+    plot_capacity_mix_stacked(equilibrium_results_dir; save_path=nothing)
+
+Plot stacked bar chart showing capacity mix proportions for each policy.
+"""
+function plot_capacity_mix_stacked(equilibrium_results_dir; save_path=nothing)
+    # Get capacity data using the existing function
+    _, capacity_data = plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothing)
+    
+    # Technology names and colors
+    tech_names = ["Nuclear", "Wind", "Gas", "Battery"]
+    colors = [PAPER_COLORS[1], PAPER_COLORS[3], PAPER_COLORS[4], PAPER_COLORS[5]]  # Blue, Green, Orange, Purple
+    
+    # Policy names and data
+    policies = ["DLAC-i", "SLAC", "Perfect Foresight"]
+    policy_data = [capacity_data["DLAC-i"], capacity_data["SLAC"], capacity_data["Perfect Foresight"]]
+    
+    # Create stacked bar chart
+    p = plot(title="Equilibrium Capacity Mix by Policy (Stacked)",
+             xlabel="Policy",
+             ylabel="Installed Capacity (MW)",
+             size=(8*72, 6*72),
+             legend=:topright,
+             left_margin=12Plots.mm,
+             bottom_margin=12Plots.mm,
+             top_margin=8Plots.mm,
+             right_margin=8Plots.mm)
+    
+    # Calculate total capacities for percentages
+    totals = [sum(data) for data in policy_data]
+    
+    # Create stacked bars
+    x_positions = 1:length(policies)
+    bottom = zeros(length(policies))
+    
+    for (i, tech) in enumerate(tech_names)
+        heights = [data[i] for data in policy_data]
+        
+        # Plot stacked bars
+        bar!(p, x_positions, heights, 
+             bottom=bottom,
+             label=tech,
+             color=colors[i],
+             alpha=0.85,
+             linewidth=1,
+             linecolor=colors[i])
+        
+        # Add percentage labels in the middle of each segment
+        for j in 1:length(policies)
+            if heights[j] > 0
+                mid_height = bottom[j] + heights[j] / 2
+                percentage = round(heights[j] / totals[j] * 100, digits=1)
+                if percentage > 5  # Only show label if segment is large enough
+                    annotate!(p, j, mid_height, 
+                             text("$(percentage)%", :center, 10, :white, :bold))
+                end
+            end
+        end
+        
+        # Update bottom for next layer
+        bottom += heights
+    end
+    
+    # Set x-axis labels
+    plot!(p, xticks=(x_positions, policies), xrotation=0)
+    
+    # Add grid for better readability
+    plot!(p, grid=true, gridwidth=1, gridcolor=:lightgray, gridalpha=0.3)
+    
+    # Add total capacity labels on top
+    for (i, (policy, total)) in enumerate(zip(policies, totals))
+        annotate!(p, i, total + maximum(totals) * 0.02, 
+                 text("$(round(total, digits=0)) MW", :center, 10, :black, :bold))
+    end
+    
+    # Set y-axis limits
+    max_total = maximum(totals)
+    ylims!(p, 0, max_total * 1.1)
+    
+    if save_path !== nothing
+        savefig(p, save_path)
+        println("Stacked capacity mix plot saved: $save_path")
+    end
+    
+    return p
+end
+
+"""
+    calculate_operational_results_comparison(equilibrium_results_dir; save_path=nothing)
+
+Calculate operational results and total system costs for each policy's capacity mix.
+Returns operational metrics and total system costs (investment + fixed O&M + operations).
+"""
+function calculate_operational_results_comparison(equilibrium_results_dir; save_path=nothing)
+    # Define paths to operations files
+    slac_ops_path = joinpath(equilibrium_results_dir, "equilibrium", "slac", "slac_operations.csv")
+    dlac_ops_path = joinpath(equilibrium_results_dir, "equilibrium", "dlac_i", "dlac_i_operations.csv")
+    pf_ops_path = joinpath(equilibrium_results_dir, "validation", "equilibrium", "perfectforesight", "perfect_foresight_operations.csv")
+    
+    # Define paths to equilibrium log files for total costs
+    slac_log_path = joinpath(equilibrium_results_dir, "equilibrium", "slac", "equilibrium_log.csv")
+    dlac_log_path = joinpath(equilibrium_results_dir, "equilibrium", "dlac_i", "equilibrium_log.csv")
+    pf_log_path = joinpath(equilibrium_results_dir, "validation", "equilibrium", "perfectforesight", "equilibrium_log.csv")
+    
+    # Read operational results
+    slac_ops = CSV.read(slac_ops_path, DataFrame)
+    dlac_ops = CSV.read(dlac_ops_path, DataFrame)
+    pf_ops = CSV.read(pf_ops_path, DataFrame)
+    
+    # Read total costs from equilibrium logs (last row)
+    slac_log = CSV.read(slac_log_path, DataFrame)
+    dlac_log = CSV.read(dlac_log_path, DataFrame)
+    pf_log = CSV.read(pf_log_path, DataFrame)
+    
+    # Get capacity data for cost calculations
+    slac_capacity_data = slac_log[end, :]
+    dlac_capacity_data = dlac_log[end, :]
+    pf_capacity_data = pf_log[end, :]
+    
+    # Cost parameters from SystemConfig.jl
+    # Investment costs ($/MW/year)
+    nuclear_inv_cost = 120_000.0
+    wind_inv_cost = 85_000.0  
+    gas_inv_cost = 70_000.0
+    battery_power_inv_cost = 95_000.0
+    battery_energy_inv_cost = 100.0  # $/MWh/year
+    
+    # Fixed O&M costs ($/MW/year)
+    nuclear_fixed_om = 35_000.0
+    wind_fixed_om = 12_000.0
+    gas_fixed_om = 12_000.0
+    battery_fixed_om = 6_000.0
+    
+    # Battery duration (hours) - from SystemConfig.jl
+    battery_duration = 4.0  # hours
+    
+    # Function to calculate total system cost
+    function calculate_total_system_cost(capacity_data, operational_cost)
+        # Extract capacities
+        nuclear_cap = capacity_data.Nuclear_capacity_MW
+        wind_cap = capacity_data.Wind_capacity_MW
+        gas_cap = capacity_data.Gas_capacity_MW
+        battery_power_cap = capacity_data.Battery_capacity_MW
+        battery_energy_cap = battery_power_cap * battery_duration  # MWh
+        
+        # Calculate investment costs
+        investment_cost = (nuclear_inv_cost * nuclear_cap + 
+                          wind_inv_cost * wind_cap + 
+                          gas_inv_cost * gas_cap + 
+                          battery_power_inv_cost * battery_power_cap + 
+                          battery_energy_inv_cost * battery_energy_cap)
+        
+        # Calculate fixed O&M costs
+        fixed_om_cost = (nuclear_fixed_om * nuclear_cap + 
+                        wind_fixed_om * wind_cap + 
+                        gas_fixed_om * gas_cap + 
+                        battery_fixed_om * battery_power_cap)
+        
+        # Total system cost = operational + investment + fixed O&M
+        return operational_cost + investment_cost + fixed_om_cost
+    end
+    
+    # Calculate operational metrics
+    function calculate_metrics(ops_df, policy_name)
+        # Calculate total generation (excluding battery discharge)
+        total_generation = ops_df.Nuclear_Generation + ops_df.Wind_Generation + ops_df.Gas_Generation +
+                          ops_df.Nuclear_Generation_Flex + ops_df.Wind_Generation_Flex + ops_df.Gas_Generation_Flex 
+        
+        # The actual demand is fixed and should be the same for all policies
+        # It equals total generation + battery discharge - battery charge + load shed
+        # But more simply: actual_demand = total_generation + battery_discharge + load_shed
+        actual_demand = total_generation + ops_df.Battery_Discharge -ops_df.Battery_Charge + ops_df.Load_Shed
+        
+        # Calculate demand-weighted average price
+        weighted_avg_price = sum(ops_df.Price .* actual_demand) / sum(actual_demand)
+        
+        return Dict(
+            "policy" => policy_name,
+            "total_generation_MWh" => sum(ops_df.Nuclear_Generation + ops_df.Wind_Generation + ops_df.Gas_Generation +
+                                         ops_df.Nuclear_Generation_Flex + ops_df.Wind_Generation_Flex + ops_df.Gas_Generation_Flex),
+            "battery_discharge_MWh" => sum(ops_df.Battery_Discharge),
+            "battery_charge_MWh" => sum(ops_df.Battery_Charge),
+            "unmet_demand_MWh" => sum(ops_df.Load_Shed),
+            "unmet_demand_fixed_MWh" => sum(ops_df.Load_Shed_Fixed),
+            "unmet_demand_flex_MWh" => sum(ops_df.Load_Shed_Flex),
+            "total_demand_MWh" => sum(actual_demand),
+            "demand_weighted_avg_price" => weighted_avg_price,
+            "max_price" => maximum(ops_df.Price),
+            "min_price" => minimum(ops_df.Price),
+            "price_volatility" => std(ops_df.Price) / mean(ops_df.Price),
+            "unmet_demand_rate" => sum(ops_df.Load_Shed) / sum(actual_demand) * 100  # Percentage
+        )
+    end
+    
+    # Calculate metrics for each policy
+    slac_metrics = calculate_metrics(slac_ops, "SLAC")
+    slac_operational_cost = slac_log[end, :total_cost]  # This is the operational cost from the equilibrium
+    slac_total_system_cost = calculate_total_system_cost(slac_capacity_data, slac_operational_cost)
+    slac_metrics["total_cost_M"] = round(slac_total_system_cost / 1e6, digits=2)
+    
+    dlac_metrics = calculate_metrics(dlac_ops, "DLAC-i")
+    dlac_operational_cost = dlac_log[end, :total_cost]  # This is the operational cost from the equilibrium
+    dlac_total_system_cost = calculate_total_system_cost(dlac_capacity_data, dlac_operational_cost)
+    dlac_metrics["total_cost_M"] = round(dlac_total_system_cost / 1e6, digits=2)
+    
+    pf_metrics = calculate_metrics(pf_ops, "Perfect Foresight")
+    pf_operational_cost = pf_log[end, :total_cost]  # This is the operational cost from the equilibrium  
+    pf_total_system_cost = calculate_total_system_cost(pf_capacity_data, pf_operational_cost)
+    pf_metrics["total_cost_M"] = round(pf_total_system_cost / 1e6, digits=2)
+    
+    # Create comparison DataFrame
+    comparison_df = DataFrame(
+        Policy = ["DLAC-i", "SLAC", "Perfect Foresight"],
+        Total_Cost_M = [dlac_metrics["total_cost_M"], slac_metrics["total_cost_M"], pf_metrics["total_cost_M"]],
+        Total_Demand_MWh = [dlac_metrics["total_demand_MWh"], slac_metrics["total_demand_MWh"], pf_metrics["total_demand_MWh"]],
+        Total_Generation_MWh = [dlac_metrics["total_generation_MWh"], slac_metrics["total_generation_MWh"], pf_metrics["total_generation_MWh"]],
+        Unmet_Demand_MWh = [dlac_metrics["unmet_demand_MWh"], slac_metrics["unmet_demand_MWh"], pf_metrics["unmet_demand_MWh"]],
+        Unmet_Demand_Rate_Pct = [dlac_metrics["unmet_demand_rate"], slac_metrics["unmet_demand_rate"], pf_metrics["unmet_demand_rate"]],
+        Battery_Discharge_MWh = [dlac_metrics["battery_discharge_MWh"], slac_metrics["battery_discharge_MWh"], pf_metrics["battery_discharge_MWh"]],
+        Battery_Charge_MWh = [dlac_metrics["battery_charge_MWh"], slac_metrics["battery_charge_MWh"], pf_metrics["battery_charge_MWh"]],
+        Demand_Weighted_Avg_Price = [dlac_metrics["demand_weighted_avg_price"], slac_metrics["demand_weighted_avg_price"], pf_metrics["demand_weighted_avg_price"]],
+        Max_Price = [dlac_metrics["max_price"], slac_metrics["max_price"], pf_metrics["max_price"]],
+        Price_Volatility = [dlac_metrics["price_volatility"], slac_metrics["price_volatility"], pf_metrics["price_volatility"]]
+    )
+    
+    # Save comparison results
+    if save_path !== nothing
+        CSV.write(save_path, comparison_df)
+        println("Operational results comparison saved: $save_path")
+    end
+    
+    # Print summary
+    println("\n" * "="^80)
+    println("OPERATIONAL RESULTS COMPARISON")
+    println("="^80)
+    println("Policy\t\tTotal System Cost (M\$)\tUnmet Demand (MWh)\tUnmet Rate (%)\tWeighted Avg Price (\$/MWh)")
+    println("-"^80)
+    for row in eachrow(comparison_df)
+        println("$(row.Policy)\t$(row.Total_Cost_M)\t\t\t$(round(row.Unmet_Demand_MWh, digits=2))\t\t$(round(row.Unmet_Demand_Rate_Pct, digits=3))\t\t$(round(row.Demand_Weighted_Avg_Price, digits=2))")
+    end
+    println("-"^80)
+    
+    # Print cost breakdown
+    println("\n" * "="^80)
+    println("COST BREAKDOWN")
+    println("="^80)
+    println("Policy\t\tOperational (M\$)\tInvestment (M\$)\tFixed O&M (M\$)\tTotal System (M\$)")
+    println("-"^80)
+    
+    policies = ["DLAC-i", "SLAC", "Perfect Foresight"]
+    operational_costs = [dlac_operational_cost, slac_operational_cost, pf_operational_cost]
+    capacity_data = [dlac_capacity_data, slac_capacity_data, pf_capacity_data]
+    
+    for (i, policy) in enumerate(policies)
+        cap_data = capacity_data[i]
+        op_cost = operational_costs[i]
+        
+        # Calculate investment and fixed O&M costs
+        nuclear_cap = cap_data.Nuclear_capacity_MW
+        wind_cap = cap_data.Wind_capacity_MW
+        gas_cap = cap_data.Gas_capacity_MW
+        battery_power_cap = cap_data.Battery_capacity_MW
+        battery_energy_cap = battery_power_cap * battery_duration
+        
+        investment_cost = (nuclear_inv_cost * nuclear_cap + 
+                          wind_inv_cost * wind_cap + 
+                          gas_inv_cost * gas_cap + 
+                          battery_power_inv_cost * battery_power_cap + 
+                          battery_energy_inv_cost * battery_energy_cap)
+        
+        fixed_om_cost = (nuclear_fixed_om * nuclear_cap + 
+                        wind_fixed_om * wind_cap + 
+                        gas_fixed_om * gas_cap + 
+                        battery_fixed_om * battery_power_cap)
+        
+        total_system_cost = op_cost + investment_cost + fixed_om_cost
+        
+        println("$(policy)\t$(round(op_cost / 1e6, digits=2))\t\t\t$(round(investment_cost / 1e6, digits=2))\t\t\t$(round(fixed_om_cost / 1e6, digits=2))\t\t\t$(round(total_system_cost / 1e6, digits=2))")
+    end
+    println("-"^80)
+    
+    return comparison_df, Dict("DLAC-i" => dlac_metrics, "SLAC" => slac_metrics, "Perfect Foresight" => pf_metrics)
 end
 
 end # module PlottingModule

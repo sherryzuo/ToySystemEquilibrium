@@ -903,9 +903,13 @@ function run_policy_equilibrium(generators, battery, initial_capacities, initial
                                equilibrium_params::EquilibriumParameters = EquilibriumParameters(),
                                base_output_dir="results", resume::Bool = false)
     
-    # Create equilibrium-specific output directory
+    # Create equilibrium-specific output directory with Anderson acceleration separation
     equilibrium_dir = joinpath(base_output_dir, "equilibrium")
-    policy_dir = joinpath(equilibrium_dir, lowercase(string(policy)))
+    
+    # Separate Anderson accelerated vs standard fixed-point iteration results
+    method_dir = equilibrium_params.anderson_acceleration ? "anderson" : "standard"
+    method_path = joinpath(equilibrium_dir, method_dir)
+    policy_dir = joinpath(method_path, lowercase(string(policy)))
     mkpath(policy_dir)
     
     # Solve equilibrium

@@ -9,11 +9,12 @@ Demonstrates the fixed-point iteration equilibrium system adapted from legacy co
 Usage:
     julia run_equilibrium.jl [policy] [options]
     
-    policy: "pf" (Perfect Foresight) or "dlac" (DLAC-i) or "both"
+    policy: "pf" (Perfect Foresight) or "dlac" (DLAC-i) or "slac" (SLAC) or "both"
     
 Examples:
     julia run_equilibrium.jl pf        # Run equilibrium with Perfect Foresight policy
     julia run_equilibrium.jl dlac      # Run equilibrium with DLAC-i policy  
+    julia run_equilibrium.jl slac      # Run equilibrium with SLAC policy
     julia run_equilibrium.jl both      # Run equilibrium with both policies
 """
 
@@ -35,11 +36,13 @@ function parse_command_line_args()
         return "pf"
     elseif policy_arg in ["dlac", "dlac_i", "dlac-i"]
         return "dlac"
+    elseif policy_arg in ["slac", "slac_i", "slac-i"]
+        return "slac"
     elseif policy_arg in ["both", "all"]
         return "both"
     else
         println("Invalid policy argument: $(ARGS[1])")
-        println("Valid options: pf, dlac, both")
+        println("Valid options: pf, dlac, slac, both")
         exit(1)
     end
 end
@@ -178,6 +181,12 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
             "DLAC-i", DLAC_i, generators, battery, profiles, equilibrium_params
         )
     end
+
+    if policy_choice in ["slac", "both"]
+        results["SLAC"] = run_equilibrium_with_policy(
+            "SLAC", SLAC, generators, battery, profiles, equilibrium_params
+        )
+    end
     
     println("\n" * "="^100)
     println("EQUILIBRIUM SOLVER COMPLETE")
@@ -193,4 +202,4 @@ end
 # results = main("dlac")   # for DLAC-i  
 # results = main("both")   # for both policies
 
-results = main("dlac")
+results = main("slac")

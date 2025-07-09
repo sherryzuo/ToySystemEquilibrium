@@ -371,6 +371,7 @@ end
 
 Generate 5 stochastic scenarios with fleet-based thermal generation for DLAC-i operations.
 Each scenario uses independent fleet paths and realistic wind forecasts.
+Returns scenarios and proper probability weights (central scenarios weighted higher).
 """
 function generate_scenarios(actual_demand, actual_wind, nuclear_availability, gas_availability, 
                            params::SystemParameters; n_scenarios=5)
