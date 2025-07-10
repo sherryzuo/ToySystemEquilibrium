@@ -10,24 +10,24 @@ module PlottingModule
 using Plots, Statistics, CSV, DataFrames
 using ..SystemConfig: Generator, Battery, SystemProfiles
 
-# Paper-quality plotting settings optimized for half-page width
+# Paper-quality plotting settings optimized for publication
 function setup_paper_quality_plots()
     # Use GR backend for better performance and quality
     gr()
     
-    # Set default plot attributes for half-page width readability
-    default(fontfamily="Times",
-            titlefontsize=16,    # Larger for visibility
-            labelfontsize=14,    # Larger for visibility
-            tickfontsize=12,     # Larger for visibility
-            legendfontsize=12,   # Larger for visibility
-            linewidth=2.5,       # Thicker lines for clarity
+    # Set default plot attributes for publication quality
+    default(fontfamily="Times New Roman",
+            titlefontsize=9,     # Much smaller titles
+            labelfontsize=8,     # Smaller axis labels
+            tickfontsize=7,      # Smaller tick labels
+            legendfontsize=7,    # Compact legend
+            linewidth=1.5,       # Thinner lines
             dpi=300,
             background_color=:white,
             foreground_color=:black,
             grid=false,
             framestyle=:box,
-            margin=8Plots.mm)    # More margin for readability
+            margin=3Plots.mm)    # Tighter margins
 end
 
 # Professional color palette (colorblind-friendly)
@@ -45,8 +45,10 @@ const PAPER_COLORS = [
 # Line styles for different models
 const PAPER_LINESTYLES = [:solid, :dash, :dot, :dashdot]
 
-# Initialize paper quality settings
-setup_paper_quality_plots()
+# Initialize paper quality settings when module is loaded
+function __init__()
+    setup_paper_quality_plots()
+end
 
 export plot_price_time_series, plot_price_duration_curves, plot_combined_price_analysis
 export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison
@@ -69,9 +71,7 @@ function plot_price_time_series(prices, model_name; save_path=nothing)
              ylabel="Price (\$/MWh)",
              color=PAPER_COLORS[1],
              size=(8*72, 4*72),  # 8x4 inches at 72 DPI base
-             legend=false,
-             left_margin=8Plots.mm,
-             bottom_margin=8Plots.mm)
+             legend=false)
     
     # Add statistics annotations
     avg_price = mean(prices)
@@ -84,7 +84,7 @@ function plot_price_time_series(prices, model_name; save_path=nothing)
     # Add text annotation with stats
     annotate!(T*0.7, max_price*0.9, 
              text("Avg: \$$(round(avg_price, digits=1))\nMax: \$$(round(max_price, digits=1))\nMin: \$$(round(min_price, digits=1))", 
-                  :left, 10, :black))
+                  :left, 8, :black))
     
     if save_path !== nothing
         savefig(p, save_path)
@@ -104,9 +104,7 @@ function plot_price_duration_curves(price_results; save_path=nothing)
              xlabel="Hours", 
              ylabel="Price (\$/MWh)",
              size=(8*72, 5*72),
-             legend=:topright,
-             left_margin=8Plots.mm,
-             bottom_margin=8Plots.mm)
+             legend=:topright)
     
     colors = PAPER_COLORS[1:3]
     linestyles = PAPER_LINESTYLES[1:3]
@@ -143,9 +141,7 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
               xlabel="Hour", 
               ylabel="Price (\$/MWh)",
               size=(8*72, 3*72),
-              legend=:topright,
-              left_margin=8Plots.mm,
-              bottom_margin=6Plots.mm)
+              legend=:topright)
     
     plot!(p1, hours, pf_prices, label="Perfect Foresight", color=PAPER_COLORS[2], linestyle=:dash)
     plot!(p1, hours, dlac_prices, label="DLAC-i", color=PAPER_COLORS[3], linestyle=:dot)
@@ -156,9 +152,7 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
               xlabel="Hours", 
               ylabel="Price (\$/MWh)",
               size=(8*72, 3*72),
-              legend=:topright,
-              left_margin=8Plots.mm,
-              bottom_margin=6Plots.mm)
+              legend=:topright)
     
     sorted_pf = sort(pf_prices, rev=true)
     sorted_dlac = sort(dlac_prices, rev=true)
@@ -174,6 +168,10 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
               ylabel="Price Difference (\$/MWh)",
               size=(8*72, 3*72),
               legend=:topright,
+              titlefontsize=9,
+              labelfontsize=8,
+              tickfontsize=7,
+              legendfontsize=7,
               left_margin=8Plots.mm,
               bottom_margin=6Plots.mm)
     
@@ -341,7 +339,7 @@ function plot_capacity_comparison(generators, battery, optimal_capacities, optim
     
     # Add capacity values on top of bars
     for (i, cap) in enumerate(capacities)
-        annotate!(i, cap + maximum(capacities)*0.02, text("$(round(cap, digits=1)) MW", :center, 12, :black))
+        annotate!(i, cap + maximum(capacities)*0.02, text("$(round(cap, digits=1)) MW", :center, 8, :black))
     end
     
     if save_path !== nothing
@@ -728,54 +726,50 @@ function plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothin
     p = plot(title="Equilibrium Capacity Mix by Policy",
              xlabel="Technology",
              ylabel="Installed Capacity (MW)",
-             size=(10*72, 7*72),  # Slightly taller for better proportions
-             legend=:topright,
-             left_margin=12Plots.mm,
-             bottom_margin=12Plots.mm,
-             top_margin=8Plots.mm,
-             right_margin=8Plots.mm)
+             size=(10*72, 6*72),
+             legend=:topright)
     
     # Use distinct colors for better visibility
     colors = [PAPER_COLORS[1], PAPER_COLORS[2], PAPER_COLORS[3]]  # Blue, Red, Green
     
     # Plot bars for each policy with better styling
     bar!(p, x_positions .- bar_width, dlac_capacities, 
-         width=bar_width, label="DLAC-i", color=colors[1], alpha=0.85, 
+         width=bar_width, label="DLAC-i", color=colors[1], alpha=0.7, 
          linewidth=1, linecolor=colors[1])
     bar!(p, x_positions, slac_capacities, 
-         width=bar_width, label="SLAC", color=colors[2], alpha=0.85,
+         width=bar_width, label="SLAC", color=colors[2], alpha=0.7,
          linewidth=1, linecolor=colors[2])
     bar!(p, x_positions .+ bar_width, pf_capacities, 
-         width=bar_width, label="Perfect Foresight", color=colors[3], alpha=0.85,
+         width=bar_width, label="Perfect Foresight", color=colors[3], alpha=0.7,
          linewidth=1, linecolor=colors[3])
     
     # Set x-axis labels with better spacing
     plot!(p, xticks=(x_positions, tech_names), xrotation=0)
     
-    # Add grid for better readability
-    plot!(p, grid=true, gridwidth=1, gridcolor=:lightgray, gridalpha=0.5)
+    # Add subtle grid for better readability
+    plot!(p, grid=true, gridwidth=0.5, gridcolor=:lightgray, gridalpha=0.4)
     
-    # Add capacity values on top of bars with better formatting
+    # Add capacity values on top of bars with smaller, cleaner text
     for (i, tech) in enumerate(tech_names)
         max_height = maximum([dlac_capacities[i], slac_capacities[i], pf_capacities[i]])
-        y_offset = max_height * 0.05  # 5% offset from top of bar
+        y_offset = max_height * 0.03  # Smaller offset for cleaner look
         
         # DLAC-i values
         if dlac_capacities[i] > 0
             annotate!(p, i - bar_width, dlac_capacities[i] + y_offset, 
-                     text("$(round(dlac_capacities[i], digits=0))", :center, 9, :black))
+                     text("$(round(dlac_capacities[i], digits=0))", :center, :black))
         end
         
         # SLAC values
         if slac_capacities[i] > 0
             annotate!(p, i, slac_capacities[i] + y_offset, 
-                     text("$(round(slac_capacities[i], digits=0))", :center, 9, :black))
+                     text("$(round(slac_capacities[i], digits=0))", :center, :black))
         end
         
         # PF values
         if pf_capacities[i] > 0
             annotate!(p, i + bar_width, pf_capacities[i] + y_offset, 
-                     text("$(round(pf_capacities[i], digits=0))", :center, 9, :black))
+                     text("$(round(pf_capacities[i], digits=0))", :center, :black))
         end
     end
     
@@ -783,13 +777,8 @@ function plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothin
     max_capacity = maximum([maximum(dlac_capacities), maximum(slac_capacities), maximum(pf_capacities)])
     ylims!(p, 0, max_capacity * 1.15)
     
-    # Add subtitle with key insights
-    total_dlac = sum(dlac_capacities)
-    total_slac = sum(slac_capacities)
-    total_pf = sum(pf_capacities)
-    
-    subtitle = "Total Capacity: DLAC-i $(round(total_dlac, digits=0)) MW, SLAC $(round(total_slac, digits=0)) MW, PF $(round(total_pf, digits=0)) MW"
-    plot!(p, title="Equilibrium Capacity Mix by Policy\n$(subtitle)", titlefontsize=14)
+    # Clean title without subtitle
+    plot!(p, title="Equilibrium Capacity Mix by Policy")
     
     if save_path !== nothing
         savefig(p, save_path)
@@ -808,71 +797,56 @@ function plot_capacity_mix_stacked(equilibrium_results_dir; save_path=nothing)
     # Get capacity data using the existing function
     _, capacity_data = plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothing)
     
-    # Technology names and colors
+    # Technology names and colors - use very distinct colors
     tech_names = ["Nuclear", "Wind", "Gas", "Battery"]
-    colors = [PAPER_COLORS[1], PAPER_COLORS[3], PAPER_COLORS[4], PAPER_COLORS[5]]  # Blue, Green, Orange, Purple
+    colors = [
+        RGB(0.1, 0.1, 0.8),     # Blue - Nuclear
+        RGB(0.0, 0.8, 0.0),     # Bright Green - Wind  
+        RGB(0.9, 0.5, 0.0),     # Orange - Gas
+        RGB(0.8, 0.0, 0.8)      # Magenta - Battery
+    ]
     
     # Policy names and data
     policies = ["DLAC-i", "SLAC", "Perfect Foresight"]
     policy_data = [capacity_data["DLAC-i"], capacity_data["SLAC"], capacity_data["Perfect Foresight"]]
     
-    # Create stacked bar chart
-    p = plot(title="Equilibrium Capacity Mix by Policy (Stacked)",
-             xlabel="Policy",
-             ylabel="Installed Capacity (MW)",
-             size=(8*72, 6*72),
-             legend=:topright,
-             left_margin=12Plots.mm,
-             bottom_margin=12Plots.mm,
-             top_margin=8Plots.mm,
-             right_margin=8Plots.mm)
-    
     # Calculate total capacities for percentages
     totals = [sum(data) for data in policy_data]
     
-    # Create stacked bars
-    x_positions = 1:length(policies)
-    bottom = zeros(length(policies))
+    # Create simple stacked bar chart using StatsPlots approach
+    # Reshape data for plotting: each column is a policy, each row is a technology
+    data_matrix = hcat(policy_data...)  # 4×3 matrix
     
-    for (i, tech) in enumerate(tech_names)
-        heights = [data[i] for data in policy_data]
-        
-        # Plot stacked bars
-        bar!(p, x_positions, heights, 
-             bottom=bottom,
-             label=tech,
-             color=colors[i],
-             alpha=0.85,
-             linewidth=1,
-             linecolor=colors[i])
-        
-        # Add percentage labels in the middle of each segment
-        for j in 1:length(policies)
-            if heights[j] > 0
-                mid_height = bottom[j] + heights[j] / 2
-                percentage = round(heights[j] / totals[j] * 100, digits=1)
-                if percentage > 5  # Only show label if segment is large enough
-                    annotate!(p, j, mid_height, 
-                             text("$(percentage)%", :center, 10, :white, :bold))
-                end
-            end
-        end
-        
-        # Update bottom for next layer
-        bottom += heights
+    # Create the stacked bar chart using manual stacking since GR doesn't support bar_position=:stack
+    p = plot(title="Capacity Mix by Policy",
+             xlabel="Policy",
+             ylabel="Installed Capacity (MW)",
+             size=(8*72, 6*72),
+             legend=:topright)
+    
+    # Create stacked bars manually using the bottom parameter
+    x_positions = 1:length(policies)
+    bar_width = 0.6
+    
+    # Start with the first technology (Nuclear) at the bottom
+    bar!(p, x_positions, [data[1] for data in policy_data], 
+         width=bar_width, label=tech_names[1], color=colors[1], alpha=0.8)
+    
+    # Add subsequent technologies on top
+    for i in 2:length(tech_names)
+        bottom_values = [sum(data[1:i-1]) for data in policy_data]
+        bar!(p, x_positions, [data[i] for data in policy_data], 
+             width=bar_width, label=tech_names[i], color=colors[i], alpha=0.8,
+             bottom=bottom_values)
     end
     
     # Set x-axis labels
-    plot!(p, xticks=(x_positions, policies), xrotation=0)
+    plot!(p, xticks=(1:length(policies), policies), xrotation=0)
     
-    # Add grid for better readability
-    plot!(p, grid=true, gridwidth=1, gridcolor=:lightgray, gridalpha=0.3)
+    # Add subtle grid for better readability
+    plot!(p, grid=true, gridwidth=0.5, gridcolor=:lightgray, gridalpha=0.3)
     
-    # Add total capacity labels on top
-    for (i, (policy, total)) in enumerate(zip(policies, totals))
-        annotate!(p, i, total + maximum(totals) * 0.02, 
-                 text("$(round(total, digits=0)) MW", :center, 10, :black, :bold))
-    end
+    # Remove total capacity labels on top for cleaner look
     
     # Set y-axis limits
     max_total = maximum(totals)
