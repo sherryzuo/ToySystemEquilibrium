@@ -16,6 +16,8 @@ using CSV, DataFrames, Plots, Statistics
 
 export run_complete_test_system
 export compare_models_analysis
+export run_performance_test_system
+export validate_cached_results_match_original
 
 """
     run_complete_test_system(; params=nothing, output_dir="results")
@@ -31,8 +33,9 @@ Args:
 
 Saves detailed results and comparisons to CSV files.
 """
-function run_complete_test_system(; params=nothing, output_dir="results")
-    println("🚀 Running Complete ToySystemQuad Test System")
+function run_complete_test_system(; params=nothing, output_dir="results", use_cached=false)
+    cache_suffix = use_cached ? " (with Model Reuse Cache)" : ""
+    println("🚀 Running Complete ToySystemQuad Test System$cache_suffix")
     println(repeat("=", 60))
     
     # Use provided parameters or defaults
@@ -74,6 +77,13 @@ function run_complete_test_system(; params=nothing, output_dir="results")
     
     print_capacity_results(generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
     
+    # Initialize model cache if using cached operations
+    model_cache = nothing
+    if use_cached
+        println("\n✓ Initializing model cache for operations...")
+        model_cache = ModelCache(24, profiles.n_scenarios)  # 24-hour lookahead
+    end
+    
     # Save capacity expansion operations and profits
     calculate_profits_and_save(generators, battery, cem_result,
                                optimal_capacities, optimal_battery_power, optimal_battery_energy,
@@ -97,15 +107,26 @@ function run_complete_test_system(; params=nothing, output_dir="results")
     println("✅ Perfect Foresight Operations solved successfully!")
     
     # STEP 3: DLAC-i Operations
-    println("\n" * repeat("=", 25) * " DLAC-I OPERATIONS " * repeat("=", 27))
+    cache_label = use_cached ? " (CACHED)" : ""
+    println("\n" * repeat("=", 25) * " DLAC-I OPERATIONS$cache_label " * repeat("=", 27))
     
-    dlac_result = solve_dlac_i_operations(generators, battery,
-                                         optimal_capacities,
-                                         optimal_battery_power,
-                                         optimal_battery_energy,
-                                         profiles;
-                                         lookahead_hours=24,
-                                         output_dir=output_dir)
+    if use_cached && model_cache !== nothing
+        dlac_result = solve_dlac_i_operations_cached(generators, battery,
+                                                   optimal_capacities,
+                                                   optimal_battery_power,
+                                                   optimal_battery_energy,
+                                                   profiles, model_cache;
+                                                   lookahead_hours=24,
+                                                   output_dir=output_dir)
+    else
+        dlac_result = solve_dlac_i_operations(generators, battery,
+                                             optimal_capacities,
+                                             optimal_battery_power,
+                                             optimal_battery_energy,
+                                             profiles;
+                                             lookahead_hours=24,
+                                             output_dir=output_dir)
+    end
     
     if dlac_result["status"] != "optimal"
         println("❌ DLAC-i Operations failed: $(dlac_result["status"])")
@@ -115,15 +136,25 @@ function run_complete_test_system(; params=nothing, output_dir="results")
     println("✅ DLAC-i Operations solved successfully!")
     
     # STEP 4: SLAC Operations
-    println("\n" * repeat("=", 25) * " SLAC OPERATIONS " * repeat("=", 29))
+    println("\n" * repeat("=", 25) * " SLAC OPERATIONS$cache_label " * repeat("=", 29))
     
-    slac_result = solve_slac_operations(generators, battery,
-                                       optimal_capacities,
-                                       optimal_battery_power,
-                                       optimal_battery_energy,
-                                       profiles;
-                                       lookahead_hours=24,
-                                       output_dir=output_dir)
+    if use_cached && model_cache !== nothing
+        slac_result = solve_slac_operations_cached(generators, battery,
+                                                 optimal_capacities,
+                                                 optimal_battery_power,
+                                                 optimal_battery_energy,
+                                                 profiles, model_cache;
+                                                 lookahead_hours=24,
+                                                 output_dir=output_dir)
+    else
+        slac_result = solve_slac_operations(generators, battery,
+                                           optimal_capacities,
+                                           optimal_battery_power,
+                                           optimal_battery_energy,
+                                           profiles;
+                                           lookahead_hours=24,
+                                           output_dir=output_dir)
+    end
     
     if slac_result["status"] != "optimal"
         println("❌ SLAC Operations failed: $(slac_result["status"])")
@@ -332,6 +363,292 @@ function print_capacity_results(generators, battery, capacities, battery_power_c
     println("  Battery: $(round(battery_power_cap, digits=1)) MW / $(round(battery_energy_cap, digits=1)) MWh")
     println("           (\$$(round(battery_investment/1e6, digits=1))M investment)")
     println("  Total Investment: \$$(round(total_investment/1e6, digits=1))M")
+end
+
+"""
+    run_performance_test_system(; params=nothing, output_dir="performance_results")
+
+Run performance comparison between original and optimized (cached) DLAC-i and SLAC operations.
+Tests model reuse with warm starts against original implementations.
+"""
+function run_performance_test_system(; params=nothing, output_dir="performance_results")
+    println("🚀 Running Model Reuse Performance Test System")
+    println(repeat("=", 60))
+    
+    # Use provided parameters or defaults (same as complete test)
+    if params === nothing
+        params = get_default_system_parameters()
+    end
+    
+    # Create complete system with specified profiles
+    generators, battery, profiles = create_complete_toy_system(params)
+    
+    println("Performance Test Configuration:")
+    println("  Time horizon: $(params.hours) hours ($(params.days) days)")
+    println("  Scenarios: $(profiles.n_scenarios)")
+    
+    # STEP 1: Run Capacity Expansion Model to get optimal capacities (same as complete test)
+    println("\n" * repeat("=", 25) * " CAPACITY EXPANSION MODEL " * repeat("=", 25))
+    cem_result = solve_capacity_expansion_model(generators, battery, profiles; 
+                                               output_dir=output_dir)
+    
+    if cem_result["status"] != "optimal"
+        println("❌ Capacity Expansion Model failed: $(cem_result["status"])")
+        return Dict("status" => "failed", "stage" => "CEM", "result" => cem_result)
+    end
+    
+    # Use optimal capacities from CEM (not hardcoded values)
+    capacities = cem_result["capacity"]
+    battery_power_cap = cem_result["battery_power_cap"]
+    battery_energy_cap = cem_result["battery_energy_cap"]
+    lookahead_hours = 24  # Use same as complete test
+    
+    println("✅ Capacity Expansion Model solved successfully!")
+    print_capacity_results(generators, battery, capacities, battery_power_cap, battery_energy_cap)
+    println("  Using lookahead: $lookahead_hours hours")
+    
+    # Create output directories
+    mkpath(output_dir)
+    mkpath(joinpath(output_dir, "original"))
+    mkpath(joinpath(output_dir, "cached"))
+    
+    println("\n" * repeat("=", 60))
+    println("PERFORMANCE COMPARISON TESTS")
+    println(repeat("=", 60))
+    
+    # Create model cache for cached tests
+    model_cache = ModelCache(lookahead_hours, profiles.n_scenarios)
+    
+    # Test DLAC-i Performance
+    println("\nTesting DLAC-i Performance...")
+    dlac_original_time = @elapsed solve_dlac_i_operations(
+        generators, battery, capacities, battery_power_cap, battery_energy_cap,
+        profiles; lookahead_hours=lookahead_hours, output_dir=joinpath(output_dir, "original")
+    )
+    
+    dlac_cached_time = @elapsed solve_dlac_i_operations_cached(
+        generators, battery, capacities, battery_power_cap, battery_energy_cap,
+        profiles, model_cache; lookahead_hours=lookahead_hours, output_dir=joinpath(output_dir, "cached")
+    )
+    
+    # Reset cache for SLAC test
+    model_cache = ModelCache(lookahead_hours, profiles.n_scenarios)
+    
+    # Test SLAC Performance  
+    println("\nTesting SLAC Performance...")
+    slac_original_time = @elapsed solve_slac_operations(
+        generators, battery, capacities, battery_power_cap, battery_energy_cap,
+        profiles; lookahead_hours=lookahead_hours, output_dir=joinpath(output_dir, "original")
+    )
+    
+    slac_cached_time = @elapsed solve_slac_operations_cached(
+        generators, battery, capacities, battery_power_cap, battery_energy_cap,
+        profiles, model_cache; lookahead_hours=lookahead_hours, output_dir=joinpath(output_dir, "cached")
+    )
+    
+    # Calculate performance improvements
+    dlac_speedup = dlac_original_time / dlac_cached_time
+    dlac_improvement = (1 - dlac_cached_time/dlac_original_time) * 100
+    
+    slac_speedup = slac_original_time / slac_cached_time
+    slac_improvement = (1 - slac_cached_time/slac_original_time) * 100
+    
+    avg_speedup = (dlac_speedup + slac_speedup) / 2
+    
+    # Create performance results summary
+    performance_df = DataFrame(
+        Method = ["DLAC-i", "SLAC"],
+        Original_Time_s = [dlac_original_time, slac_original_time],
+        Cached_Time_s = [dlac_cached_time, slac_cached_time],
+        Speedup = [dlac_speedup, slac_speedup],
+        Improvement_Percent = [dlac_improvement, slac_improvement]
+    )
+    
+    CSV.write(joinpath(output_dir, "performance_comparison_results.csv"), performance_df)
+    
+    # Print results
+    println("\n" * repeat("=", 60))
+    println("PERFORMANCE RESULTS SUMMARY")
+    println(repeat("=", 60))
+    
+    println("DLAC-i Results:")
+    println("  Original:  $(round(dlac_original_time, digits=2))s")
+    println("  Cached:    $(round(dlac_cached_time, digits=2))s")
+    println("  Speedup:   $(round(dlac_speedup, digits=2))x ($(round(dlac_improvement, digits=1))% improvement)")
+    
+    println("\nSLAC Results:")
+    println("  Original:  $(round(slac_original_time, digits=2))s")
+    println("  Cached:    $(round(slac_cached_time, digits=2))s")
+    println("  Speedup:   $(round(slac_speedup, digits=2))x ($(round(slac_improvement, digits=1))% improvement)")
+    
+    println("\nOverall Performance:")
+    println("  Average Speedup: $(round(avg_speedup, digits=2))x")
+    
+    if avg_speedup >= 2.0
+        println("\n🎉 Excellent performance gains! Model reuse is working effectively.")
+    elseif avg_speedup >= 1.5
+        println("\n✨ Good performance improvements achieved!")
+    else
+        println("\n⚠️  Performance gains are modest. Consider larger problems for better demonstration.")
+    end
+    
+    println("\nKey Benefits Achieved:")
+    println("• Model structure built once, reused across rolling horizon")
+    println("• Warm starts accelerate optimization convergence")
+    println("• Constraint RHS updates instead of model rebuilding")
+    println("• Equilibrium-aware model caching for multiple iterations")
+    
+    return Dict(
+        "status" => "success",
+        "performance_results" => performance_df,
+        "dlac_speedup" => dlac_speedup,
+        "slac_speedup" => slac_speedup,
+        "average_speedup" => avg_speedup
+    )
+end
+
+"""
+    validate_cached_results_match_original(; params=nothing, output_dir="validation_results")
+
+Validate that cached operations produce identical results to original operations.
+Tests both DLAC-i and SLAC with same capacities and profiles.
+"""
+function validate_cached_results_match_original(; params=nothing, output_dir="validation_results")
+    println("🔍 Validating Cached Operations Match Original Results")
+    println(repeat("=", 60))
+    
+    # Use provided parameters or defaults  
+    if params === nothing
+        params = get_default_system_parameters()
+    end
+    
+    # Create complete system
+    generators, battery, profiles = create_complete_toy_system(params)
+    
+    # Run capacity expansion to get optimal capacities
+    cem_result = solve_capacity_expansion_model(generators, battery, profiles; 
+                                               output_dir=output_dir)
+    
+    if cem_result["status"] != "optimal"
+        println("❌ Capacity Expansion failed, cannot validate")
+        return Dict("status" => "failed", "reason" => "CEM failed")
+    end
+    
+    capacities = cem_result["capacity"]
+    battery_power_cap = cem_result["battery_power_cap"]
+    battery_energy_cap = cem_result["battery_energy_cap"]
+    lookahead_hours = 24
+    
+    println("✓ Using optimal capacities from CEM for validation")
+    print_capacity_results(generators, battery, capacities, battery_power_cap, battery_energy_cap)
+    
+    # Initialize model cache
+    model_cache = ModelCache(lookahead_hours, profiles.n_scenarios)
+    
+    println("\n" * repeat("=", 60))
+    println("VALIDATION TESTS")
+    println(repeat("=", 60))
+    
+    # Test DLAC-i
+    println("\n🧪 Testing DLAC-i: Original vs Cached")
+    
+    dlac_original = solve_dlac_i_operations(generators, battery, capacities, 
+                                           battery_power_cap, battery_energy_cap, profiles;
+                                           lookahead_hours=lookahead_hours, 
+                                           output_dir=joinpath(output_dir, "original"))
+    
+    dlac_cached = solve_dlac_i_operations_cached(generators, battery, capacities,
+                                               battery_power_cap, battery_energy_cap, profiles, model_cache;
+                                               lookahead_hours=lookahead_hours,
+                                               output_dir=joinpath(output_dir, "cached"))
+    
+    dlac_match = validate_results_identical(dlac_original, dlac_cached, "DLAC-i")
+    
+    # Reset cache for SLAC test
+    model_cache = ModelCache(lookahead_hours, profiles.n_scenarios)
+    
+    # Test SLAC  
+    println("\n🧪 Testing SLAC: Original vs Cached")
+    
+    slac_original = solve_slac_operations(generators, battery, capacities,
+                                         battery_power_cap, battery_energy_cap, profiles;
+                                         lookahead_hours=lookahead_hours,
+                                         output_dir=joinpath(output_dir, "original"))
+    
+    slac_cached = solve_slac_operations_cached(generators, battery, capacities,
+                                             battery_power_cap, battery_energy_cap, profiles, model_cache;
+                                             lookahead_hours=lookahead_hours,
+                                             output_dir=joinpath(output_dir, "cached"))
+    
+    slac_match = validate_results_identical(slac_original, slac_cached, "SLAC")
+    
+    # Summary
+    println("\n" * repeat("=", 60))
+    println("VALIDATION RESULTS SUMMARY")
+    println(repeat("=", 60))
+    
+    if dlac_match && slac_match
+        println("✅ SUCCESS: All cached operations produce identical results!")
+        println("  DLAC-i: ✓ Identical")
+        println("  SLAC:   ✓ Identical")
+        return Dict("status" => "success", "dlac_match" => true, "slac_match" => true)
+    else
+        println("❌ FAILURE: Cached operations do not match original")
+        println("  DLAC-i: $(dlac_match ? "✓" : "❌")")
+        println("  SLAC:   $(slac_match ? "✓" : "❌")")
+        return Dict("status" => "failed", "dlac_match" => dlac_match, "slac_match" => slac_match)
+    end
+end
+
+"""
+    validate_results_identical(result1, result2, model_name)
+
+Compare two optimization results dictionaries for identical values.
+Returns true if all key metrics match within numerical precision.
+"""
+function validate_results_identical(result1::Dict, result2::Dict, model_name::String)
+    tolerance = 1e-10  # Very tight tolerance for exact match
+    
+    # Key metrics to compare
+    metrics = ["total_cost", "generation", "generation_flex", "battery_charge", "battery_discharge", 
+               "battery_soc", "load_shed", "prices"]
+    
+    all_match = true
+    
+    for metric in metrics
+        if haskey(result1, metric) && haskey(result2, metric)
+            val1 = result1[metric]
+            val2 = result2[metric]
+            
+            if isa(val1, Array) && isa(val2, Array)
+                if size(val1) != size(val2)
+                    println("  ❌ $metric: Array sizes differ - $(size(val1)) vs $(size(val2))")
+                    all_match = false
+                    continue
+                end
+                
+                max_diff = maximum(abs.(val1 - val2))
+                if max_diff > tolerance
+                    println("  ❌ $metric: Max difference $(max_diff) > tolerance $(tolerance)")
+                    all_match = false
+                else
+                    println("  ✓ $metric: Identical (max diff: $(max_diff))")
+                end
+            else
+                diff = abs(val1 - val2)
+                if diff > tolerance
+                    println("  ❌ $metric: Difference $(diff) > tolerance $(tolerance)")
+                    all_match = false
+                else
+                    println("  ✓ $metric: Identical (diff: $(diff))")
+                end
+            end
+        else
+            println("  ⚠️  $metric: Missing in one result")
+        end
+    end
+    
+    return all_match
 end
 
 end # module TestRunner

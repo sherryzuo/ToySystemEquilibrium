@@ -36,14 +36,18 @@ using .TestRunner
 using .EquilibriumModule
 
 # Export main functions for external use
-export run_complete_test_system
+export run_complete_test_system, run_performance_test_system, validate_cached_results_match_original
 
 # Core system creation and configuration
 export create_complete_toy_system, get_default_system_parameters
 export SystemProfiles, SystemParameters, Generator, Battery
 
 # Optimization models  
-export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations
+export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations, solve_slac_operations
+
+# Model reuse and caching for performance optimization
+export ModelCache, solve_dlac_i_operations_cached, solve_slac_operations_cached
+export build_dlac_i_model, update_and_solve_dlac_i, build_slac_model, update_and_solve_slac
 
 # Profile generation functions
 export generate_system_profiles, generate_wind_forecast
