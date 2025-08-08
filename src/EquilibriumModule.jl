@@ -16,7 +16,7 @@ module EquilibriumModule
 
 using CSV, DataFrames, Statistics, LinearAlgebra
 using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles
-using ..OptimizationModels: solve_perfect_foresight_operations, solve_dlac_i_operations, solve_slac_operations, compute_pmr
+using ..OptimizationModels: solve_perfect_foresight_operations, compute_pmr
 using ..OptimizationModels: solve_dlac_i_operations_cached, solve_slac_operations_cached, ModelCache
 
 export EquilibriumParameters, solve_equilibrium, run_policy_equilibrium
@@ -115,7 +115,6 @@ struct EquilibriumParameters
     anderson_beta_default::Float64   # Default relaxation parameter
     anderson_beta_max::Float64       # Maximum relaxation parameter
     anderson_T::Int                  # Interval for recomputing optimal beta
-    use_cached_operations::Bool      # Whether to use cached model reuse operations
     
     function EquilibriumParameters(;
         max_iterations::Int = 20,
@@ -130,11 +129,10 @@ struct EquilibriumParameters
         anderson_beta_default::Float64 = 1.0,
         anderson_beta_max::Float64 = 3.0,
         anderson_T::Int = 5,
-        use_cached_operations::Bool = false
     )
         new(max_iterations, tolerance, step_size, smoothing_beta, min_capacity_threshold, 
             update_generators, update_battery, anderson_acceleration, anderson_depth, 
-            anderson_beta_default, anderson_beta_max, anderson_T, use_cached_operations)
+            anderson_beta_default, anderson_beta_max, anderson_T)
     end
 end
 
@@ -278,40 +276,27 @@ end
 """
     call_policy_function(policy::PolicyFunction, generators, battery, capacities, 
                         battery_power_cap, battery_energy_cap, profiles; 
-                        use_cached=false, model_cache=nothing, kwargs...)
+                        model_cache=nothing, kwargs...)
 
 Dispatch operational optimization to the appropriate policy function.
-Uses cached operations if use_cached=true and appropriate cache is provided.
 """
 function call_policy_function(policy::PolicyFunction, generators, battery, capacities, 
                              battery_power_cap, battery_energy_cap, profiles::SystemProfiles; 
-                             use_cached::Bool=false, model_cache=nothing, 
+                             model_cache=nothing, 
                              output_dir="results", kwargs...)
     if policy == PerfectForesight
         return solve_perfect_foresight_operations(generators, battery, capacities, 
                                                 battery_power_cap, battery_energy_cap, 
                                                 profiles; output_dir=output_dir, kwargs...)
     elseif policy == DLAC_i
-        if use_cached && model_cache !== nothing
-            return solve_dlac_i_operations_cached(generators, battery, capacities, 
+        return solve_dlac_i_operations_cached(generators, battery, capacities, 
                                                 battery_power_cap, battery_energy_cap, 
                                                 profiles, model_cache; output_dir=output_dir, kwargs...)
-        else
-            return solve_dlac_i_operations(generators, battery, capacities, 
-                                         battery_power_cap, battery_energy_cap, 
-                                         profiles; output_dir=output_dir, kwargs...)
-        end
     elseif policy == SLAC
-        if use_cached && model_cache !== nothing
-            return solve_slac_operations_cached(generators, battery, capacities, 
+        return solve_slac_operations_cached(generators, battery, capacities, 
                                               battery_power_cap, battery_energy_cap, 
                                               profiles, model_cache; output_dir=output_dir, kwargs...)
-        else
-            return solve_slac_operations(generators, battery, capacities, 
-                                       battery_power_cap, battery_energy_cap, 
-                                       profiles; output_dir=output_dir, kwargs...)
-        end
-    else
+     else
         error("Unknown policy function: $policy")
     end
 end
@@ -576,12 +561,11 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         println("  AAopt1_T acceleration: depth=$(equilibrium_params.anderson_depth), β_default=$(equilibrium_params.anderson_beta_default), β_max=$(equilibrium_params.anderson_beta_max), T=$(equilibrium_params.anderson_T)")
     end
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
-    println("  Model reuse cache: $(equilibrium_params.use_cached_operations)")
     println()
     
     # Initialize model cache if using cached operations
     model_cache = nothing
-    if equilibrium_params.use_cached_operations && (policy == DLAC_i || policy == SLAC)
+    if policy == DLAC_i || policy == SLAC
         # Use default lookahead hours - can be overridden by kwargs
         default_lookahead = 24
         model_cache = ModelCache(default_lookahead, profiles.n_scenarios)
@@ -671,8 +655,7 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         # Solve operational problem with current capacities
         operational_result = call_policy_function(policy, generators, battery, current_capacities, 
                                                  current_battery_power_cap, current_battery_energy_cap, 
-                                                 profiles; use_cached=equilibrium_params.use_cached_operations,
-                                                 model_cache=model_cache, output_dir=output_dir)
+                                                 profiles;model_cache=model_cache, output_dir=output_dir)
         
         if operational_result["status"] != "optimal"
             println("WARNING: Operational optimization failed at iteration $iter")

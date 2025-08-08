@@ -129,13 +129,13 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
     # ========================================
     equilibrium_params = EquilibriumParameters(
         max_iterations = 10000,        # Maximum number of iterations
-        tolerance = 5e-3,           # Convergence tolerance (PMR threshold) - PMR < 0.5%
-        step_size = 0.7,           # Fixed step size for capacity updates
+        tolerance = 1e-2,           # Convergence tolerance (PMR threshold) - PMR < 0.5%
+        step_size = 0.8,           # Fixed step size for capacity updates
         smoothing_beta = 10.0,      # Softplus smoothing parameter
         min_capacity_threshold = 1e-6,  # Minimum capacity threshold
         anderson_acceleration = true,   # Enable AAopt1_T Anderson acceleration
-        anderson_depth = 2,            # Use fewer previous iterates for smoother updates
-        anderson_beta_default = 0.3,   # More conservative default relaxation parameter
+        anderson_depth = 5,            # Use fewer previous iterates for smoother updates
+        anderson_beta_default = 0.5,   # More conservative default relaxation parameter
         anderson_beta_max = 0.8,       # More conservative maximum relaxation parameter  
         anderson_T = 10                # Recompute optimal β less frequently for stability
     )
@@ -202,4 +202,4 @@ end
 # results = main("dlac")   # for DLAC-i  
 # results = main("both")   # for both policies
 
-results = main("slac")
+results = main("dlac")

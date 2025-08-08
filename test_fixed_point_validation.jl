@@ -99,7 +99,7 @@ function test_fixed_point_validation()
         # update_generators = [true, true, false],  # Only update Nuclear and Wind, freeze Gas
         # update_generators = [false, false, true], # Only update Gas, freeze Nuclear and Wind
         # update_generators = [true, false, true],  # Update Nuclear and Gas, freeze Wind
-        update_battery = true                    # Update battery
+        update_battery = true
     )
     
     println("\nEquilibrium parameters:")
@@ -118,6 +118,7 @@ function test_fixed_point_validation()
         equilibrium_params = equilibrium_params,
         base_output_dir = "results/validation"
     )
+
 
 end
 # Run the validation test

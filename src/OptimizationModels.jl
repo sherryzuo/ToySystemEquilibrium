@@ -12,7 +12,7 @@ module OptimizationModels
 using JuMP, Gurobi, LinearAlgebra, CSV, DataFrames, Statistics
 using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles, get_default_system_parameters
 
-export solve_capacity_expansion_model, solve_perfect_foresight_operations, solve_dlac_i_operations, solve_slac_operations
+export solve_capacity_expansion_model, solve_perfect_foresight_operations
 export save_operational_results, calculate_profits_and_save, compute_pmr
 export build_dlac_i_model, update_and_solve_dlac_i, build_slac_model, update_and_solve_slac
 export ModelCache, solve_dlac_i_operations_cached, solve_slac_operations_cached
@@ -294,150 +294,224 @@ end
 # =============================================================================
 # 3. DLAC-I OPERATIONS (Deterministic Look-Ahead with Imperfect Information)
 # =============================================================================
-
 """
-    solve_dlac_i_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap;
-                            lookahead_hours=24, params=nothing, output_dir="results")
+    build_dlac_i_model(generators, battery, capacities, battery_power_cap, battery_energy_cap, 
+                       lookahead_hours, params)
 
-Solve operations using DLAC-i policy with rolling horizon optimization.
-At each time t, solves a lookahead problem using:
-- ACTUAL demand/wind/outages for period t (current)
-- MEAN forecast from scenarios for periods t+1 to t+H
+Build the DLAC-i optimization model structure once for reuse across rolling horizon iterations.
+Returns the model, variables, and constraint references for RHS updates.
 
-Mathematical formulation at time t:
-min: Σ_{t'∈T^H_t} Σ_n (c^op_n * p̃_n,t,t') + penalty * δ̃^d_t,t'
-
-Subject to:
-- Power balance: Σ_n p̃_n,t,t' - Σ_s (p̃^ch_s,t,t' - p̃^dis_s,t,t') + δ̃^d_t,t' = d_t,t'  ∀t'∈T^H_t
-- Generation limits: p̃_n,t,t' ≤ y_n * ã_n,t,t'  ∀n,t'  (capacities FIXED)
-- Storage constraints: SOC dynamics, power limits
-- Non-anticipativity: p̃_n,t,t = p_n,t (first period binding)
-
-Where d_t,t' and ã_n,t,t' are actual values for t'=t, mean forecasts for t'>t.
+This function creates all the model structure (variables, constraints) with dummy RHS values
+that will be updated in each rolling horizon iteration by update_and_solve_dlac_i().
 """
-function solve_dlac_i_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap,
-                                 profiles::SystemProfiles; lookahead_hours=24, output_dir="results")
-    params = profiles.params
-    
-    # Get actual profiles and scenarios for forecasting
-    actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
-    demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
-    
-    T = params.hours
+function build_dlac_i_model(generators, battery, capacities, battery_power_cap, battery_energy_cap, 
+                            lookahead_hours::Int, params)
     G = length(generators)
-    S = length(demand_scenarios)
+    H = lookahead_hours
     
-    # Compute mean forecasts from scenarios
-    mean_demand_forecast = [mean([demand_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_wind_forecast = [mean([wind_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_nuclear_avail_forecast = [mean([nuclear_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_gas_avail_forecast = [mean([gas_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
+    # Create optimization model
+    model = Model(Gurobi.Optimizer)
+    set_silent(model)
     
-    println("Solving DLAC-i Operations with $(lookahead_hours)-hour lookahead for $T hours")
-    println("  Using actual values for current period, mean forecasts for lookahead")
-    println("  Forecast accuracy: Demand $(round(cor(actual_demand, mean_demand_forecast), digits=3)), Wind $(round(cor(actual_wind, mean_wind_forecast), digits=3))")
+    # Here-and-now variables for current period decisions (t=1 only)
+    @variable(model, x_p[1:G] >= 0)                 # Generation for fixed demand (current period)
+    @variable(model, x_p_flex[1:G] >= 0)            # Generation for flexible demand (current period)
+    @variable(model, x_p_ch >= 0)                   # Battery charging (current period)
+    @variable(model, x_p_dis >= 0)                  # Battery discharging (current period)
+    @variable(model, x_soc >= 0)                    # Battery SOC (current period)
+    @variable(model, x_δ_d_fixed >= 0)              # Fixed demand load shedding (current period)
+    @variable(model, x_δ_d_flex >= 0)               # Flexible demand load shedding (current period)
     
-    # Initialize result storage
-    generation_schedule = zeros(G, T)
-    generation_flex_schedule = zeros(G, T)
-    battery_charge_schedule = zeros(T)
-    battery_discharge_schedule = zeros(T)
-    battery_soc_schedule = zeros(T)
-    load_shed_schedule = zeros(T)
-    load_shed_fixed_schedule = zeros(T)
-    load_shed_flex_schedule = zeros(T)
-    prices = zeros(T)
+    # Decision variables for lookahead horizon
+    @variable(model, p̃[1:G, 1:H] >= 0)  # Generation for fixed demand
+    @variable(model, p̃_flex[1:G, 1:H] >= 0)  # Generation for flexible demand
+    @variable(model, p̃_ch[1:H] >= 0)    # Battery charging
+    @variable(model, p̃_dis[1:H] >= 0)   # Battery discharging
+    @variable(model, s̃oc[1:H] >= 0)     # Battery SOC
+    @variable(model, δ̃_d_fixed[1:H] >= 0)  # Fixed demand load shedding
+    @variable(model, δ̃_d_flex[1:H] >= 0)   # Flexible demand load shedding
     
-    # State tracking
-    current_soc = battery_energy_cap * 0.5
+    # Store variables for easy access
+    variables = Dict(
+        "x_p" => x_p, "x_p_flex" => x_p_flex, "x_p_ch" => x_p_ch, "x_p_dis" => x_p_dis,
+        "x_soc" => x_soc, "x_δ_d_fixed" => x_δ_d_fixed, "x_δ_d_flex" => x_δ_d_flex,
+        "p̃" => p̃, "p̃_flex" => p̃_flex, "p̃_ch" => p̃_ch, "p̃_dis" => p̃_dis,
+        "s̃oc" => s̃oc, "δ̃_d_fixed" => δ̃_d_fixed, "δ̃_d_flex" => δ̃_d_flex
+    )
     
-    # Build the optimization model once (reused across all time steps)
-    println("  Building reusable DLAC-i model structure...")
-    model, variables, constraint_refs = build_dlac_i_model(generators, battery, capacities, 
-                                                           battery_power_cap, battery_energy_cap, 
-                                                           lookahead_hours, params)
+    # Non-anticipativity constraints linking here-and-now to first period variables
+    @constraint(model, [g=1:G], p̃[g, 1] == x_p[g])
+    @constraint(model, [g=1:G], p̃_flex[g, 1] == x_p_flex[g])
+    @constraint(model, p̃_ch[1] == x_p_ch)
+    @constraint(model, p̃_dis[1] == x_p_dis)
+    @constraint(model, s̃oc[1] == x_soc)
+    @constraint(model, δ̃_d_fixed[1] == x_δ_d_fixed)
+    @constraint(model, δ̃_d_flex[1] == x_δ_d_flex)
     
-    # Rolling horizon optimization
-    for t in 1:T
-        if t % 100 == 0
-            println("  Processing hour $t/$T")
-        end
-        
-        # Determine lookahead horizon
-        horizon_end = min(t + lookahead_hours - 1, T)
-        horizon = t:horizon_end
-        
-        # Update and solve the model using warm starts
-        result = update_and_solve_dlac_i(
-            model, variables, constraint_refs, generators, battery, 
-            capacities, battery_power_cap, battery_energy_cap,
-            current_soc, t,
-            actual_demand, actual_wind, nuclear_availability, gas_availability,
-            mean_demand_forecast, mean_wind_forecast, mean_nuclear_avail_forecast, mean_gas_avail_forecast,
-            horizon, params
-        )
-        
-        # Extract results
-        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, price_val = result
-        
-        if !any(isnan, x_p_val)
-            # Store first-period decisions
-            generation_schedule[:, t] = x_p_val
-            generation_flex_schedule[:, t] = x_p_flex_val
-            battery_charge_schedule[t] = x_p_ch_val
-            battery_discharge_schedule[t] = x_p_dis_val
-            battery_soc_schedule[t] = x_soc_val
-            load_shed_schedule[t] = x_δ_d_fixed_val + x_δ_d_flex_val
-            load_shed_fixed_schedule[t] = x_δ_d_fixed_val
-            load_shed_flex_schedule[t] = x_δ_d_flex_val
-            prices[t] = price_val
-            
-            # Update SOC state for next iteration
-            current_soc = x_soc_val
-        else
-            println("Warning: DLAC-i optimization failed at hour $t")
-            load_shed_schedule[t] = actual_demand[t]
-            prices[t] = params.load_shed_penalty
+    # Power balance constraints (RHS will be updated)
+    power_balance_constrs = @constraint(model, power_balance_lookahead[τ=1:H],
+        sum(p̃[g,τ] for g in 1:G) + p̃_dis[τ] - p̃_ch[τ] + sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_fixed[τ] + δ̃_d_flex[τ] == 0.0)
+    
+    # Flexible demand constraint: total flexible generation + shedding = available flexible demand
+    @constraint(model, [τ=1:H], sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_flex[τ] == params.flex_demand_mw)
+    
+    # Generation constraints with availability factors (capacity limits will be updated)
+    generation_constrs = Dict{String, Any}()
+    for g in 1:G
+        generation_constrs[generators[g].name] = @constraint(model, [τ=1:H], 
+            p̃[g,τ] + p̃_flex[g,τ] <= 0.0)  # RHS will be updated with capacities[g] * availability
+    end
+    
+    # Battery constraints (capacity limits - will be updated when capacities change)
+    battery_charge_constrs = @constraint(model, [τ=1:H], p̃_ch[τ] <= battery_power_cap)
+    battery_discharge_constrs = @constraint(model, [τ=1:H], p̃_dis[τ] <= battery_power_cap)
+    battery_energy_constrs = @constraint(model, [τ=1:H], s̃oc[τ] <= battery_energy_cap)
+    
+    # Battery SOC dynamics (initial condition RHS will be updated)
+    soc_initial_constr = @constraint(model, s̃oc[1] == 0.0 + 
+        battery.efficiency_charge * p̃_ch[1] - p̃_dis[1]/battery.efficiency_discharge)
+    soc_evolution_constrs = @constraint(model, [τ=2:H], s̃oc[τ] == s̃oc[τ-1] + 
+        battery.efficiency_charge * p̃_ch[τ] - p̃_dis[τ]/battery.efficiency_discharge)
+    
+    # DLAC-i Objective: Minimize total operational cost over lookahead horizon
+    # This is the deterministic equivalent of SLAC's stochastic objective
+    operational_cost = sum(
+        sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p̃[g,τ] + p̃_flex[g,τ]) for g in 1:G) +
+        battery.var_om_cost * (p̃_ch[τ] + p̃_dis[τ]) +
+        params.load_shed_penalty * (δ̃_d_fixed[τ] + 0.5 * δ̃_d_flex[τ]^2 / params.flex_demand_mw)
+        for τ in 1:H
+    )
+    
+    @objective(model, Min, operational_cost)
+    
+    # Store constraint references for RHS updates
+    constraint_refs = Dict(
+        "power_balance" => power_balance_constrs,
+        "generation" => generation_constrs,
+        "soc_initial" => soc_initial_constr,
+        "soc_evolution" => soc_evolution_constrs,
+        "battery_charge" => battery_charge_constrs,
+        "battery_discharge" => battery_discharge_constrs,
+        "battery_energy" => battery_energy_constrs
+    )
+    
+    return model, variables, constraint_refs
+end
+
+"""
+    update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, capacities,
+                            battery_power_cap, battery_energy_cap, current_soc, t, 
+                            actual_demand, actual_wind, nuclear_availability, gas_availability,
+                            mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
+                            horizon, params)
+
+Update the DLAC-i model with current time-step data and solve with warm start.
+Similar to the Python update_and_solve_model() function.
+"""
+function update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, 
+                                 capacities, battery_power_cap, battery_energy_cap, 
+                                 current_soc::Float64, t::Int,
+                                 actual_demand, actual_wind, nuclear_availability, gas_availability,
+                                 mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
+                                 horizon, params)
+    
+    G = length(generators)
+    H = length(horizon)
+    
+    # OPTIMIZATION: Store warm start values BEFORE constraint modifications
+    warm_start_values = Dict()
+    if termination_status(model) == MOI.OPTIMAL
+        try
+            # Store current solution values for warm starting
+            warm_start_values["x_p"] = [value(variables["x_p"][g]) for g in 1:G]
+            warm_start_values["x_p_flex"] = [value(variables["x_p_flex"][g]) for g in 1:G]
+            warm_start_values["x_p_ch"] = value(variables["x_p_ch"])
+            warm_start_values["x_p_dis"] = value(variables["x_p_dis"])
+            warm_start_values["x_soc"] = value(variables["x_soc"])
+            warm_start_values["x_δ_d_fixed"] = value(variables["x_δ_d_fixed"])
+            warm_start_values["x_δ_d_flex"] = value(variables["x_δ_d_flex"])
+        catch
+            # No previous solution available - warm_start_values remains empty
         end
     end
     
-    result = Dict(
-        "status" => "optimal",
-        "model_type" => "DLAC-i",
-        "generation" => generation_schedule,
-        "generation_flex" => generation_flex_schedule,
-        "battery_charge" => battery_charge_schedule,
-        "battery_discharge" => battery_discharge_schedule,
-        "battery_soc" => battery_soc_schedule,
-        "load_shed" => load_shed_schedule,
-        "load_shed_fixed" => load_shed_fixed_schedule,
-        "load_shed_flex" => load_shed_flex_schedule,
-        "commitment" => ones(G, T),
-        "startup" => zeros(G, T),
-        "prices" => prices,
-        "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
-                               (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
-                               battery.var_om_cost * (battery_charge_schedule[t] + battery_discharge_schedule[t]) +
-                               params.load_shed_penalty * (load_shed_fixed_schedule[t] + 0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
-        "nuclear_availability" => nuclear_availability,
-        "gas_availability" => gas_availability
-    )
+    # Update power balance constraint RHS
+    for (τ_idx, τ) in enumerate(1:H)
+        actual_horizon_idx = horizon[τ_idx]
+        demand_value = (τ == 1) ? actual_demand[t] : mean_demand_forecast[actual_horizon_idx]
+        set_normalized_rhs(constraint_refs["power_balance"][τ], demand_value + params.flex_demand_mw)
+    end
     
-    # Save operational results
-    save_operational_results(result, generators, battery, "dlac_i", output_dir)
+    # Update generation constraints RHS with availability factors
+    for g in 1:G
+        gen_name = generators[g].name
+        for (τ_idx, τ) in enumerate(1:H)
+            actual_horizon_idx = horizon[τ_idx]
+            
+            if gen_name == "Nuclear"
+                availability = (τ == 1) ? nuclear_availability[t] : mean_nuclear_forecast[actual_horizon_idx]
+            elseif gen_name == "Wind"  
+                availability = (τ == 1) ? actual_wind[t] : mean_wind_forecast[actual_horizon_idx]
+            elseif gen_name == "Gas"
+                availability = (τ == 1) ? gas_availability[t] : mean_gas_forecast[actual_horizon_idx]
+            else
+                availability = 1.0
+            end
+            
+            set_normalized_rhs(constraint_refs["generation"][gen_name][τ], capacities[g] * availability)
+        end
+    end
     
-    println("DLAC-i Operations Summary:")
-    println("  Total operational cost: \$$(round(result["total_cost"], digits=0))")
-    println("  Total load shed: $(round(sum(load_shed_schedule), digits=1)) MWh")
-    println("  Maximum price: \$$(round(maximum(prices), digits=2))/MWh")
+    # Update battery SOC initial condition (constraint is: s̃oc[1] == current_soc + charge - discharge)
+    # We need to modify the constraint to be: s̃oc[1] - p̃_ch[1] * efficiency + p̃_dis[1] / efficiency == current_soc
+    # But since constraint is already built as s̃oc[1] == RHS, we set RHS to current_soc
+    # (the charge/discharge terms are handled by the model variables automatically)
+    set_normalized_rhs(constraint_refs["soc_initial"], current_soc)
     
-    return result
+    # DLAC-i objective is static - operational costs over deterministic forecast horizon
+    # Unlike SLAC, no need to rebuild objective since we use deterministic mean forecasts
+    
+    # Apply warm start values AFTER constraint updates but BEFORE optimize!
+    if !isempty(warm_start_values)
+        try
+            for g in 1:G
+                set_start_value(variables["x_p"][g], warm_start_values["x_p"][g])
+                set_start_value(variables["x_p_flex"][g], warm_start_values["x_p_flex"][g])
+            end
+            set_start_value(variables["x_p_ch"], warm_start_values["x_p_ch"])
+            set_start_value(variables["x_p_dis"], warm_start_values["x_p_dis"])
+            set_start_value(variables["x_soc"], warm_start_values["x_soc"])
+            set_start_value(variables["x_δ_d_fixed"], warm_start_values["x_δ_d_fixed"])
+            set_start_value(variables["x_δ_d_flex"], warm_start_values["x_δ_d_flex"])
+        catch
+            # Skip if warm start fails
+        end
+    end
+    
+    # Optimize
+    optimize!(model)
+    
+    if termination_status(model) == MOI.OPTIMAL
+        # Return first-period decisions (use here-and-now variables)
+        return (
+            value.(variables["x_p"]),
+            value.(variables["x_p_flex"]),
+            value(variables["x_p_ch"]),
+            value(variables["x_p_dis"]),
+            value(variables["x_soc"]),
+            value(variables["x_δ_d_fixed"]),
+            value(variables["x_δ_d_flex"]),
+            dual(constraint_refs["power_balance"][1])
+        )
+    else
+        # Return failure indicators
+        return (
+            fill(NaN, G),
+            fill(NaN, G),
+            NaN, NaN, NaN, NaN, NaN,
+            params.load_shed_penalty
+        )
+    end
 end
 
 # =============================================================================
@@ -719,344 +793,6 @@ end
 # =============================================================================
 
 """
-    solve_slac_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap;
-                         lookahead_hours=24, output_dir="results", scenario_weights=nothing)
-
-Solve SLAC operations with stochastic scenario-based optimization instead of mean forecasts.
-SLAC optimizes over scenarios with probabilistic weights rather than taking means like DLAC-i.
-
-Args:
-- scenario_weights: Vector of weights for each scenario (default: equal weights)
-- Other args same as DLAC-i
-"""
-function solve_slac_operations(generators, battery, capacities, battery_power_cap, battery_energy_cap,
-                              profiles::SystemProfiles; lookahead_hours=24, output_dir="results", 
-                              scenario_weights=nothing)
-    params = profiles.params
-    
-    # Get actual profiles and scenarios
-    actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
-    demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
-    
-    T = params.hours
-    G = length(generators)
-    S = length(demand_scenarios)
-    
-    # Set default equal weights if not provided
-    if scenario_weights === nothing
-        scenario_weights = fill(1.0/S, S)
-    else
-        # Normalize weights to sum to 1
-        scenario_weights = scenario_weights ./ sum(scenario_weights)
-    end
-    
-    println("Solving SLAC Operations with $(lookahead_hours)-hour lookahead for $T hours")
-    println("  Using actual values for current period, scenario optimization for lookahead")
-    println("  Number of scenarios: $S, weights: $(round.(scenario_weights, digits=3))")
-    
-    # Initialize result storage
-    generation_schedule = zeros(G, T)
-    generation_flex_schedule = zeros(G, T)
-    battery_charge_schedule = zeros(T)
-    battery_discharge_schedule = zeros(T)
-    battery_soc_schedule = zeros(T)
-    load_shed_schedule = zeros(T)
-    load_shed_fixed_schedule = zeros(T)
-    load_shed_flex_schedule = zeros(T)
-    prices = zeros(T)
-    
-    # State tracking
-    current_soc = battery_energy_cap * 0.5
-    
-    # Build the optimization model once (reused across all time steps)
-    println("  Building reusable SLAC model structure...")
-    model, variables, constraint_refs = build_slac_model(generators, battery, capacities, 
-                                                         battery_power_cap, battery_energy_cap, 
-                                                         lookahead_hours, params, S)
-    
-    # Rolling horizon optimization
-    for t in 1:T
-        if t % 100 == 0
-            println("  Processing hour $t/$T")
-        end
-        
-        # Determine lookahead horizon
-        horizon_end = min(t + lookahead_hours - 1, T)
-        horizon = t:horizon_end
-        
-        # Update and solve the model using warm starts
-        result = update_and_solve_slac(
-            model, variables, constraint_refs, generators, battery, 
-            capacities, battery_power_cap, battery_energy_cap,
-            current_soc, t,
-            actual_demand, actual_wind, nuclear_availability, gas_availability,
-            demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
-            horizon, params, scenario_weights
-        )
-        
-        # Extract results
-        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, price_val = result
-        
-        if !any(isnan, x_p_val)
-            # Store first-period decisions
-            generation_schedule[:, t] = x_p_val
-            generation_flex_schedule[:, t] = x_p_flex_val
-            battery_charge_schedule[t] = x_p_ch_val
-            battery_discharge_schedule[t] = x_p_dis_val
-            battery_soc_schedule[t] = x_soc_val
-            load_shed_schedule[t] = x_δ_d_fixed_val + x_δ_d_flex_val
-            load_shed_fixed_schedule[t] = x_δ_d_fixed_val
-            load_shed_flex_schedule[t] = x_δ_d_flex_val
-            prices[t] = price_val
-            
-            # Update SOC state for next iteration
-            current_soc = x_soc_val
-        else
-            println("Warning: SLAC optimization failed at hour $t")
-            load_shed_schedule[t] = actual_demand[t]
-            prices[t] = params.load_shed_penalty
-        end
-    end
-
-    
-    result = Dict(
-        "status" => "optimal",
-        "model_type" => "SLAC",
-        "generation" => generation_schedule,
-        "generation_flex" => generation_flex_schedule,
-        "battery_charge" => battery_charge_schedule,
-        "battery_discharge" => battery_discharge_schedule,
-        "battery_soc" => battery_soc_schedule,
-        "load_shed" => load_shed_schedule,
-        "load_shed_fixed" => load_shed_fixed_schedule,
-        "load_shed_flex" => load_shed_flex_schedule,
-        "commitment" => ones(G, T),
-        "startup" => zeros(G, T),
-        "prices" => prices,
-        "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
-                               (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
-                               battery.var_om_cost * (battery_charge_schedule[t] + battery_discharge_schedule[t]) +
-                               params.load_shed_penalty * (load_shed_fixed_schedule[t] + 
-                               0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
-        "scenario_weights" => scenario_weights
-    )
-    
-    save_operational_results(result, generators, battery, "slac", output_dir)
-    
-    println("SLAC Operations Summary:")
-    println("  Total operational cost: \$$(round(result["total_cost"], digits=0))")
-    println("  Total load shed: $(round(sum(load_shed_schedule), digits=1)) MWh")
-    println("  Maximum price: \$$(round(maximum(prices), digits=2))/MWh")
-    println("  Scenario weights used: $(round.(scenario_weights, digits=3))")
-    
-    return result
-end
-
-# =============================================================================
-# MODEL REUSE AND WARM START FUNCTIONS
-# =============================================================================
-
-"""
-    build_dlac_i_model(generators, battery, capacities, battery_power_cap, battery_energy_cap, 
-                       lookahead_hours, params)
-
-Build the DLAC-i optimization model structure once for reuse across rolling horizon iterations.
-Returns the model, variables, and constraint references for RHS updates.
-
-This function creates all the model structure (variables, constraints) with dummy RHS values
-that will be updated in each rolling horizon iteration by update_and_solve_dlac_i().
-"""
-function build_dlac_i_model(generators, battery, capacities, battery_power_cap, battery_energy_cap, 
-                            lookahead_hours::Int, params)
-    G = length(generators)
-    H = lookahead_hours
-    
-    # Create optimization model
-    model = Model(Gurobi.Optimizer)
-    set_silent(model)
-    
-    # Here-and-now variables for current period decisions (t=1 only)
-    @variable(model, x_p[1:G] >= 0)                 # Generation for fixed demand (current period)
-    @variable(model, x_p_flex[1:G] >= 0)            # Generation for flexible demand (current period)
-    @variable(model, x_p_ch >= 0)                   # Battery charging (current period)
-    @variable(model, x_p_dis >= 0)                  # Battery discharging (current period)
-    @variable(model, x_soc >= 0)                    # Battery SOC (current period)
-    @variable(model, x_δ_d_fixed >= 0)              # Fixed demand load shedding (current period)
-    @variable(model, x_δ_d_flex >= 0)               # Flexible demand load shedding (current period)
-    
-    # Decision variables for lookahead horizon
-    @variable(model, p̃[1:G, 1:H] >= 0)  # Generation for fixed demand
-    @variable(model, p̃_flex[1:G, 1:H] >= 0)  # Generation for flexible demand
-    @variable(model, p̃_ch[1:H] >= 0)    # Battery charging
-    @variable(model, p̃_dis[1:H] >= 0)   # Battery discharging
-    @variable(model, s̃oc[1:H] >= 0)     # Battery SOC
-    @variable(model, δ̃_d_fixed[1:H] >= 0)  # Fixed demand load shedding
-    @variable(model, δ̃_d_flex[1:H] >= 0)   # Flexible demand load shedding
-    
-    # Store variables for easy access
-    variables = Dict(
-        "x_p" => x_p, "x_p_flex" => x_p_flex, "x_p_ch" => x_p_ch, "x_p_dis" => x_p_dis,
-        "x_soc" => x_soc, "x_δ_d_fixed" => x_δ_d_fixed, "x_δ_d_flex" => x_δ_d_flex,
-        "p̃" => p̃, "p̃_flex" => p̃_flex, "p̃_ch" => p̃_ch, "p̃_dis" => p̃_dis,
-        "s̃oc" => s̃oc, "δ̃_d_fixed" => δ̃_d_fixed, "δ̃_d_flex" => δ̃_d_flex
-    )
-    
-    # Non-anticipativity constraints linking here-and-now to first period variables
-    @constraint(model, [g=1:G], p̃[g, 1] == x_p[g])
-    @constraint(model, [g=1:G], p̃_flex[g, 1] == x_p_flex[g])
-    @constraint(model, p̃_ch[1] == x_p_ch)
-    @constraint(model, p̃_dis[1] == x_p_dis)
-    @constraint(model, s̃oc[1] == x_soc)
-    @constraint(model, δ̃_d_fixed[1] == x_δ_d_fixed)
-    @constraint(model, δ̃_d_flex[1] == x_δ_d_flex)
-    
-    # Power balance constraints (RHS will be updated)
-    power_balance_constrs = @constraint(model, power_balance_lookahead[τ=1:H],
-        sum(p̃[g,τ] for g in 1:G) + p̃_dis[τ] - p̃_ch[τ] + sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_fixed[τ] + δ̃_d_flex[τ] == 0.0)
-    
-    # Flexible demand constraint: total flexible generation + shedding = available flexible demand
-    @constraint(model, [τ=1:H], sum(p̃_flex[g,τ] for g in 1:G) + δ̃_d_flex[τ] == params.flex_demand_mw)
-    
-    # Generation constraints with availability factors (capacity limits will be updated)
-    generation_constrs = Dict{String, Any}()
-    for g in 1:G
-        generation_constrs[generators[g].name] = @constraint(model, [τ=1:H], 
-            p̃[g,τ] + p̃_flex[g,τ] <= 0.0)  # RHS will be updated with capacities[g] * availability
-    end
-    
-    # Battery constraints (fixed capacity limits)
-    @constraint(model, [τ=1:H], p̃_ch[τ] <= battery_power_cap)
-    @constraint(model, [τ=1:H], p̃_dis[τ] <= battery_power_cap)
-    @constraint(model, [τ=1:H], s̃oc[τ] <= battery_energy_cap)
-    
-    # Battery SOC dynamics (initial condition RHS will be updated)
-    soc_initial_constr = @constraint(model, s̃oc[1] == 0.0 + 
-        battery.efficiency_charge * p̃_ch[1] - p̃_dis[1]/battery.efficiency_discharge)
-    soc_evolution_constrs = @constraint(model, [τ=2:H], s̃oc[τ] == s̃oc[τ-1] + 
-        battery.efficiency_charge * p̃_ch[τ] - p̃_dis[τ]/battery.efficiency_discharge)
-    
-    # Set dummy objective (will be updated)
-    @objective(model, Min, 0)
-    
-    # Store constraint references for RHS updates
-    constraint_refs = Dict(
-        "power_balance" => power_balance_constrs,
-        "generation" => generation_constrs,
-        "soc_initial" => soc_initial_constr,
-        "soc_evolution" => soc_evolution_constrs
-    )
-    
-    return model, variables, constraint_refs
-end
-
-"""
-    update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, capacities,
-                            battery_power_cap, battery_energy_cap, current_soc, t, 
-                            actual_demand, actual_wind, nuclear_availability, gas_availability,
-                            mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
-                            horizon, params)
-
-Update the DLAC-i model with current time-step data and solve with warm start.
-Similar to the Python update_and_solve_model() function.
-"""
-function update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, 
-                                 capacities, battery_power_cap, battery_energy_cap, 
-                                 current_soc::Float64, t::Int,
-                                 actual_demand, actual_wind, nuclear_availability, gas_availability,
-                                 mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
-                                 horizon, params)
-    
-    G = length(generators)
-    H = length(horizon)
-    
-    # OPTIMIZATION: Efficient warm start for DLAC-i - only key variables
-    if termination_status(model) == MOI.OPTIMAL
-        try
-            # Only warm start here-and-now variables (most important for convergence)
-            for g in 1:G
-                set_start_value(variables["x_p"][g], value(variables["x_p"][g]))
-                set_start_value(variables["x_p_flex"][g], value(variables["x_p_flex"][g]))
-            end
-            set_start_value(variables["x_p_ch"], value(variables["x_p_ch"]))
-            set_start_value(variables["x_p_dis"], value(variables["x_p_dis"]))
-            set_start_value(variables["x_soc"], value(variables["x_soc"]))
-            set_start_value(variables["x_δ_d_fixed"], value(variables["x_δ_d_fixed"]))
-            set_start_value(variables["x_δ_d_flex"], value(variables["x_δ_d_flex"]))
-        catch
-            # Skip if no previous solution available
-        end
-    end
-    
-    # Update power balance constraint RHS
-    for (τ_idx, τ) in enumerate(1:H)
-        actual_horizon_idx = horizon[τ_idx]
-        demand_value = (τ == 1) ? actual_demand[t] : mean_demand_forecast[actual_horizon_idx]
-        set_normalized_rhs(constraint_refs["power_balance"][τ], demand_value + params.flex_demand_mw)
-    end
-    
-    # Update generation constraints RHS with availability factors
-    for g in 1:G
-        gen_name = generators[g].name
-        for (τ_idx, τ) in enumerate(1:H)
-            actual_horizon_idx = horizon[τ_idx]
-            
-            if gen_name == "Nuclear"
-                availability = (τ == 1) ? nuclear_availability[t] : mean_nuclear_forecast[actual_horizon_idx]
-            elseif gen_name == "Wind"  
-                availability = (τ == 1) ? actual_wind[t] : mean_wind_forecast[actual_horizon_idx]
-            elseif gen_name == "Gas"
-                availability = (τ == 1) ? gas_availability[t] : mean_gas_forecast[actual_horizon_idx]
-            else
-                availability = 1.0
-            end
-            
-            set_normalized_rhs(constraint_refs["generation"][gen_name][τ], capacities[g] * availability)
-        end
-    end
-    
-    # Update battery SOC initial condition (constraint is: s̃oc[1] == current_soc + charge - discharge)
-    # We need to modify the constraint to be: s̃oc[1] - p̃_ch[1] * efficiency + p̃_dis[1] / efficiency == current_soc
-    # But since constraint is already built as s̃oc[1] == RHS, we set RHS to current_soc
-    # (the charge/discharge terms are handled by the model variables automatically)
-    set_normalized_rhs(constraint_refs["soc_initial"], current_soc)
-    
-    # OPTIMIZATION: Skip objective rebuilding - it's the same structure every time
-    # The objective function structure doesn't change in DLAC-i, only the horizon length
-    # For efficiency, we rely on the pre-built objective from model construction
-    
-    # Optimize
-    optimize!(model)
-    
-    if termination_status(model) == MOI.OPTIMAL
-        # Return first-period decisions (use here-and-now variables)
-        return (
-            value.(variables["x_p"]),
-            value.(variables["x_p_flex"]),
-            value(variables["x_p_ch"]),
-            value(variables["x_p_dis"]),
-            value(variables["x_soc"]),
-            value(variables["x_δ_d_fixed"]),
-            value(variables["x_δ_d_flex"]),
-            dual(constraint_refs["power_balance"][1])
-        )
-    else
-        # Return failure indicators
-        return (
-            fill(NaN, G),
-            fill(NaN, G),
-            NaN, NaN, NaN, NaN, NaN,
-            params.load_shed_penalty
-        )
-    end
-end
-
-"""
     build_slac_model(generators, battery, capacities, battery_power_cap, battery_energy_cap, 
                      lookahead_hours, params, num_scenarios)
 
@@ -1125,20 +861,21 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
             p̃[g,τ,s] + p̃_flex[g,τ,s] <= 0.0)  # RHS will be updated with capacities[g] * availability
     end
     
-    # Battery constraints (fixed capacity limits)
-    @constraint(model, [τ=1:H, s=1:S], p̃_ch[τ,s] <= battery_power_cap)
-    @constraint(model, [τ=1:H, s=1:S], p̃_dis[τ,s] <= battery_power_cap)
-    @constraint(model, [τ=1:H, s=1:S], s̃oc[τ,s] <= battery_energy_cap)
+    # Battery constraints (capacity limits - will be updated when capacities change)
+    battery_charge_constrs = @constraint(model, [τ=1:H, s=1:S], p̃_ch[τ,s] <= battery_power_cap)
+    battery_discharge_constrs = @constraint(model, [τ=1:H, s=1:S], p̃_dis[τ,s] <= battery_power_cap)
+    battery_energy_constrs = @constraint(model, [τ=1:H, s=1:S], s̃oc[τ,s] <= battery_energy_cap)
     
-    # Battery SOC dynamics (initial condition will be updated)
-    soc_initial_constrs = @constraint(model, [s=1:S], s̃oc[1,s] == 0.0 + 
-        battery.efficiency_charge * p̃_ch[1,s] - p̃_dis[1,s]/battery.efficiency_discharge)
+    # Battery SOC dynamics (initial condition will be updated via RHS)
+    # Create as s̃oc[1,s] - battery.efficiency_charge * p̃_ch[1,s] + p̃_dis[1,s]/battery.efficiency_discharge == current_soc
+    soc_initial_constrs = @constraint(model, [s=1:S], s̃oc[1,s] - 
+        battery.efficiency_charge * p̃_ch[1,s] + p̃_dis[1,s]/battery.efficiency_discharge == 0.0)
     soc_evolution_constrs = @constraint(model, [τ=2:H, s=1:S], s̃oc[τ,s] == s̃oc[τ-1,s] + 
         battery.efficiency_charge * p̃_ch[τ,s] - p̃_dis[τ,s]/battery.efficiency_discharge)
     
-    # Battery boundary conditions (end-of-horizon constraints)
-    @constraint(model, [s=1:S], s̃oc[H,s] >= battery_energy_cap * 0.4)
-    @constraint(model, [s=1:S], s̃oc[H,s] <= battery_energy_cap * 0.6)
+    # Battery boundary conditions (end-of-horizon constraints - depend on energy capacity)
+    battery_boundary_min_constrs = @constraint(model, [s=1:S], s̃oc[H,s] >= battery_energy_cap * 0.4)
+    battery_boundary_max_constrs = @constraint(model, [s=1:S], s̃oc[H,s] <= battery_energy_cap * 0.6)
     
     # Set dummy objective (will be updated)
     @objective(model, Min, 0)
@@ -1148,7 +885,12 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
         "power_balance" => power_balance_constrs,
         "generation" => generation_constrs,
         "soc_initial" => soc_initial_constrs,
-        "soc_evolution" => soc_evolution_constrs
+        "soc_evolution" => soc_evolution_constrs,
+        "battery_charge" => battery_charge_constrs,
+        "battery_discharge" => battery_discharge_constrs,
+        "battery_energy" => battery_energy_constrs,
+        "battery_boundary_min" => battery_boundary_min_constrs,
+        "battery_boundary_max" => battery_boundary_max_constrs
     )
     
     return model, variables, constraint_refs
@@ -1170,42 +912,53 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
                                demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
                                horizon, params, scenario_weights; model_cache=nothing)
     
+    # Track current time step for debugging
+    constraint_refs["debug_t"] = t
+    
     G = length(generators)
     H = length(horizon)
     S = length(scenario_weights)
     
-    # OPTIMIZATION: Efficient warm start - only set warm starts for key decision variables
-    # Avoid expensive all_variables() loop and focus on here-and-now variables
+    # OPTIMIZATION: Store warm start values BEFORE constraint modifications
+    debug_mode = haskey(ENV, "DEBUG_SLAC_CACHE") && ENV["DEBUG_SLAC_CACHE"] == "1"
+    warm_start_values = Dict()
+    warm_start_applied = false
+    
     if termination_status(model) == MOI.OPTIMAL
         try
-            # Only warm start here-and-now variables (most important for convergence)
-            for g in 1:G
-                set_start_value(variables["x_p"][g], value(variables["x_p"][g]))
-                set_start_value(variables["x_p_flex"][g], value(variables["x_p_flex"][g]))
-            end
-            set_start_value(variables["x_p_ch"], value(variables["x_p_ch"]))
-            set_start_value(variables["x_p_dis"], value(variables["x_p_dis"]))
-            set_start_value(variables["x_soc"], value(variables["x_soc"]))
-            set_start_value(variables["x_δ_d_fixed"], value(variables["x_δ_d_fixed"]))
-            set_start_value(variables["x_δ_d_flex"], value(variables["x_δ_d_flex"]))
-        catch
-            # Skip if no previous solution available
+            # Store current solution values for warm starting
+            warm_start_values["x_p"] = [value(variables["x_p"][g]) for g in 1:G]
+            warm_start_values["x_p_flex"] = [value(variables["x_p_flex"][g]) for g in 1:G]
+            warm_start_values["x_p_ch"] = value(variables["x_p_ch"])
+            warm_start_values["x_p_dis"] = value(variables["x_p_dis"])
+            warm_start_values["x_soc"] = value(variables["x_soc"])
+            warm_start_values["x_δ_d_fixed"] = value(variables["x_δ_d_fixed"])
+            warm_start_values["x_δ_d_flex"] = value(variables["x_δ_d_flex"])
+            warm_start_applied = true
+        catch e
+            # No previous solution available
+            warm_start_applied = false
         end
     end
     
     # OPTIMIZATION: Update constraints that change in rolling horizon
     # Balance between updating only necessary constraints vs correctness
     
-    # Update power balance constraints for rolling horizon window
+    # OPTIMIZATION: Efficient power balance constraint updates
+    # Only update first period with actual data; later periods may not change much
+    constraint_updates = 0
+    
     for (τ_idx, τ) in enumerate(1:H)
         actual_horizon_idx = horizon[τ_idx]
         for s in 1:S
             demand_value = (τ == 1) ? actual_demand[t] : demand_scenarios[s][actual_horizon_idx]
             set_normalized_rhs(constraint_refs["power_balance"][τ, s], demand_value + params.flex_demand_mw)
+            constraint_updates += 1
         end
     end
     
-    # Update generation constraints for rolling horizon window  
+    # OPTIMIZATION: Streamlined generation constraint updates
+    gen_constraint_updates = 0
     for g in 1:G
         gen_name = generators[g].name
         for (τ_idx, τ) in enumerate(1:H)
@@ -1222,6 +975,7 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
                 end
                 
                 set_normalized_rhs(constraint_refs["generation"][gen_name][τ, s], capacities[g] * availability)
+                gen_constraint_updates += 1
             end
         end
     end
@@ -1231,16 +985,13 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
         set_normalized_rhs(constraint_refs["soc_initial"][s], current_soc)
     end
     
-    # OPTIMIZATION: Only rebuild objective if scenario weights have changed
-    # Check if scenario weights changed significantly to avoid unnecessary objective rebuilding
-    weights_changed = true
-    if model_cache !== nothing && length(model_cache.last_scenario_weights) == S
-        # Compare weights with tolerance for floating point precision
-        weights_changed = any(abs(model_cache.last_scenario_weights[s] - scenario_weights[s]) > 1e-8 for s in 1:S)
-    end
+    # CRITICAL: Always rebuild SLAC objective because rolling horizon changes structure
+    # Period τ=1 uses actual realizations (deterministic) while τ>1 uses scenarios (stochastic)
+    # As we roll forward, the mix of deterministic vs stochastic periods changes
+    # This fundamental structure change requires objective rebuilding every iteration
+    should_rebuild = true  # Always rebuild for correctness
     
-    # Only rebuild objective if weights changed or this is the first time
-    if weights_changed || (model_cache !== nothing && model_cache.objective_needs_rebuild)
+    if should_rebuild
         scenario_costs = []
         for s in 1:S
             scenario_cost = sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (variables["p̃"][g,τ,s] + variables["p̃_flex"][g,τ,s]) for g in 1:G) +
@@ -1259,7 +1010,24 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
         end
     end
     
-    # Optimize
+    # Apply warm start values AFTER constraint updates but BEFORE optimize!
+    if warm_start_applied && !isempty(warm_start_values)
+        try
+            for g in 1:G
+                set_start_value(variables["x_p"][g], warm_start_values["x_p"][g])
+                set_start_value(variables["x_p_flex"][g], warm_start_values["x_p_flex"][g])
+            end
+            set_start_value(variables["x_p_ch"], warm_start_values["x_p_ch"])
+            set_start_value(variables["x_p_dis"], warm_start_values["x_p_dis"])
+            set_start_value(variables["x_soc"], warm_start_values["x_soc"])
+            set_start_value(variables["x_δ_d_fixed"], warm_start_values["x_δ_d_fixed"])
+            set_start_value(variables["x_δ_d_flex"], warm_start_values["x_δ_d_flex"])
+        catch
+            # Skip if warm start fails
+        end
+    end
+    
+    # OPTIMIZATION: Streamlined optimization call
     optimize!(model)
     
     if termination_status(model) == MOI.OPTIMAL
@@ -1474,15 +1242,28 @@ function update_capacity_constraints_dlac_i!(model, constraint_refs, generators,
                                              battery_power_cap, battery_energy_cap)
     G = length(generators)
     
-    # Update battery power and energy capacity constraints
-    # Note: Battery capacity constraints are structural in the model builder, but if they depend on
-    # the specific capacity values, we would update them here. For now, they're handled in model building.
+    # Update battery power capacity constraints (charge and discharge limits)
+    if haskey(constraint_refs, "battery_charge")
+        for τ in 1:length(constraint_refs["battery_charge"])
+            set_normalized_rhs(constraint_refs["battery_charge"][τ], battery_power_cap)
+        end
+    end
     
-    # The generation capacity constraints will be updated dynamically in each rolling horizon iteration
-    # through the update_and_solve_dlac_i function, so we don't need to update them here
+    if haskey(constraint_refs, "battery_discharge") 
+        for τ in 1:length(constraint_refs["battery_discharge"])
+            set_normalized_rhs(constraint_refs["battery_discharge"][τ], battery_power_cap)
+        end
+    end
     
-    # This function serves as a placeholder for any structural capacity constraint updates
-    # that might be needed when the model is reused across equilibrium iterations
+    # Update battery energy capacity constraints (SOC limits)
+    if haskey(constraint_refs, "battery_energy")
+        for τ in 1:length(constraint_refs["battery_energy"])
+            set_normalized_rhs(constraint_refs["battery_energy"][τ], battery_energy_cap)
+        end
+    end
+    
+    # Note: Generation capacity constraints are updated dynamically in each rolling horizon iteration
+    # through the update_and_solve_dlac_i function based on availability factors
     
     return nothing
 end
@@ -1498,8 +1279,48 @@ function update_capacity_constraints_slac!(model, constraint_refs, generators, c
     G = length(generators)
     S = num_scenarios
     
-    # Similar to DLAC-i, the capacity constraints are updated dynamically in the rolling horizon
-    # iterations through update_and_solve_slac, so this serves as a structural placeholder
+    # Update battery power capacity constraints (charge and discharge limits)
+    # SLAC has constraints indexed by [τ, s] (time and scenario)
+    if haskey(constraint_refs, "battery_charge")
+        for τ in 1:size(constraint_refs["battery_charge"], 1)
+            for s in 1:S
+                set_normalized_rhs(constraint_refs["battery_charge"][τ, s], battery_power_cap)
+            end
+        end
+    end
+    
+    if haskey(constraint_refs, "battery_discharge")
+        for τ in 1:size(constraint_refs["battery_discharge"], 1)
+            for s in 1:S
+                set_normalized_rhs(constraint_refs["battery_discharge"][τ, s], battery_power_cap)
+            end
+        end
+    end
+    
+    # Update battery energy capacity constraints (SOC limits)
+    if haskey(constraint_refs, "battery_energy")
+        for τ in 1:size(constraint_refs["battery_energy"], 1)
+            for s in 1:S
+                set_normalized_rhs(constraint_refs["battery_energy"][τ, s], battery_energy_cap)
+            end
+        end
+    end
+    
+    # Update battery boundary conditions (end-of-horizon constraints)
+    if haskey(constraint_refs, "battery_boundary_min")
+        for s in 1:S
+            set_normalized_rhs(constraint_refs["battery_boundary_min"][s], battery_energy_cap * 0.4)
+        end
+    end
+    
+    if haskey(constraint_refs, "battery_boundary_max")
+        for s in 1:S
+            set_normalized_rhs(constraint_refs["battery_boundary_max"][s], battery_energy_cap * 0.6)
+        end
+    end
+    
+    # Note: Generation capacity constraints are updated dynamically in each rolling horizon iteration
+    # through the update_and_solve_slac function based on availability factors
     
     return nothing
 end
@@ -1555,10 +1376,6 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
     
     # Rolling horizon optimization using cached model
     for t in 1:T
-        if t % 100 == 0
-            println("  Processing hour $t/$T")
-        end
-        
         # Determine lookahead horizon
         horizon_end = min(t + lookahead_hours - 1, T)
         horizon = t:horizon_end
@@ -1640,7 +1457,7 @@ Execute SLAC operations using a pre-built cached model structure.
 """
 function solve_slac_with_cached_model(generators, battery, capacities, battery_power_cap, battery_energy_cap,
                                       profiles, cached_model, cached_variables, cached_constraint_refs, 
-                                      lookahead_hours, output_dir, scenario_weights, model_cache=nothing)
+                                      lookahead_hours, output_dir, scenario_weights, model_cache=nothing, save_results=true)
     params = profiles.params
     
     # Get scenario data
@@ -1739,9 +1556,10 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
                                0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
         "scenario_weights" => scenario_weights
     )
-    
-    save_operational_results(result, generators, battery, "slac_cached", output_dir)
-    
+    if save_results
+        # Save operational results
+        save_operational_results(result, generators, battery, "slac_cached", output_dir)
+    end
     println("SLAC Cached Operations Summary:")
     println("  Total operational cost: \$$(round(result["total_cost"], digits=0))")
     println("  Total load shed: $(round(sum(load_shed_schedule), digits=1)) MWh")
