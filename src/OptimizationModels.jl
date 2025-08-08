@@ -41,16 +41,18 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     
     # Get actual profiles (deterministic for CEM)
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
     
     T = params.hours
     G = length(generators)
     
+    # Use generator-specific availability profiles
+    availabilities = profiles.generator_availabilities
+    
     println("Solving Capacity Expansion Model (CEM) for $T hours")
-    println("  Nuclear availability: $(round(mean(nuclear_availability)*100, digits=1))%")
-    println("  Gas availability: $(round(mean(gas_availability)*100, digits=1))%")
+    for g in 1:G
+        avg_availability = mean(availabilities[g])
+        println("  $(generators[g].name) availability: $(round(avg_availability*100, digits=1))%")
+    end
     
     # Create optimization model
     model = Model(Gurobi.Optimizer)
@@ -66,7 +68,7 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     @variable(model, p_flex[1:G, 1:T] >= 0)  # Generation for flexible demand
     @variable(model, p_ch[1:T] >= 0)  # Battery charging
     @variable(model, p_dis[1:T] >= 0)  # Battery discharging
-    @variable(model, soc[1:T] >= 0)  # Battery state of charge
+    @variable(model, soc[1:T])  # Battery state of charge (no upper/lower bounds as requested)
     @variable(model, δ_d_fixed[1:T] >= 0)  # Fixed demand load shedding
     @variable(model, δ_d_flex[1:T] >= 0)  # Flexible demand load shedding
     
@@ -95,32 +97,21 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     
     # Generation limits with availability factors
     for g in 1:G
-        if generators[g].name == "Nuclear"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * nuclear_availability[t])
-        elseif generators[g].name == "Wind"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * actual_wind[t])
-        elseif generators[g].name == "Gas"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * gas_availability[t])
-        else
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g])
-        end
+        @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * availabilities[g][t])
     end
     
-    # Battery constraints
+    # Battery constraints (no SOC bounds as requested)
     @constraint(model, [t=1:T], p_ch[t] <= y_bat_power)
     @constraint(model, [t=1:T], p_dis[t] <= y_bat_power)
-    @constraint(model, [t=1:T], soc[t] <= y_bat_energy)
     
-    # Battery SOC dynamics
+    # Battery SOC dynamics (no upper/lower bounds on SOC)
     @constraint(model, soc[1] == y_bat_energy * 0.5 + 
         battery.efficiency_charge * p_ch[1] - p_dis[1]/battery.efficiency_discharge)
     @constraint(model, [t=2:T], soc[t] == soc[t-1] + 
         battery.efficiency_charge * p_ch[t] - p_dis[t]/battery.efficiency_discharge)
     
-    # Battery energy/power ratio and boundary conditions
+    # Battery energy/power ratio
     @constraint(model, y_bat_energy <= y_bat_power * battery.duration)
-    @constraint(model, soc[T] >= y_bat_energy * 0.4)
-    @constraint(model, soc[T] <= y_bat_energy * 0.6)
     
     optimize!(model)
     
@@ -146,10 +137,8 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
             "fixed_cost" => value(fixed_cost),
             "operational_cost" => value(operational_cost),
             "prices" => dual.(power_balance),
-            "nuclear_availability" => nuclear_availability,
-            "gas_availability" => gas_availability,
-            "demand_used" => actual_demand,
-            "wind_used" => actual_wind
+            "generator_availabilities" => availabilities,
+            "demand_used" => actual_demand
         )
         
         # Save results
@@ -187,17 +176,19 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
     
     # Get the same profiles as used in capacity expansion
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
     
     T = params.hours
     G = length(generators)
     
+    # Use generator-specific availability profiles
+    availabilities = profiles.generator_availabilities
+    
     println("Solving Perfect Foresight Operations (DLAC-p) for $T hours")
     println("  Using FIXED capacities from capacity expansion")
-    println("  Nuclear availability: $(round(mean(nuclear_availability)*100, digits=1))%")
-    println("  Gas availability: $(round(mean(gas_availability)*100, digits=1))%")
+    for g in 1:G
+        avg_availability = mean(availabilities[g])
+        println("  $(generators[g].name) availability: $(round(avg_availability*100, digits=1))%")
+    end
     
     # Create optimization model
     model = Model(Gurobi.Optimizer)
@@ -228,15 +219,7 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
     
     # Generation limits with FIXED capacities and availability factors
     for g in 1:G
-        if generators[g].name == "Nuclear"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * nuclear_availability[t])
-        elseif generators[g].name == "Wind"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * actual_wind[t])
-        elseif generators[g].name == "Gas"
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * gas_availability[t])
-        else
-            @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g])
-        end
+        @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= capacities[g] * availabilities[g][t])
     end
     
     # Battery constraints with FIXED capacities
@@ -272,8 +255,7 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
             "startup" => zeros(G, T),
             "total_cost" => objective_value(model),
             "prices" => dual.(power_balance),
-            "nuclear_availability" => nuclear_availability,
-            "gas_availability" => gas_availability
+            "generator_availabilities" => availabilities
         )
         
         # Save operational results
@@ -401,18 +383,16 @@ end
 """
     update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, capacities,
                             battery_power_cap, battery_energy_cap, current_soc, t, 
-                            actual_demand, actual_wind, nuclear_availability, gas_availability,
-                            mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
+                            actual_demand, availabilities, mean_demand_forecast, mean_generator_forecasts,
                             horizon, params)
 
 Update the DLAC-i model with current time-step data and solve with warm start.
-Similar to the Python update_and_solve_model() function.
+Uses generator-indexed availability profiles.
 """
 function update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, 
                                  capacities, battery_power_cap, battery_energy_cap, 
                                  current_soc::Float64, t::Int,
-                                 actual_demand, actual_wind, nuclear_availability, gas_availability,
-                                 mean_demand_forecast, mean_wind_forecast, mean_nuclear_forecast, mean_gas_forecast,
+                                 actual_demand, availabilities, mean_demand_forecast, mean_generator_forecasts,
                                  horizon, params)
     
     G = length(generators)
@@ -448,15 +428,8 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
         for (τ_idx, τ) in enumerate(1:H)
             actual_horizon_idx = horizon[τ_idx]
             
-            if gen_name == "Nuclear"
-                availability = (τ == 1) ? nuclear_availability[t] : mean_nuclear_forecast[actual_horizon_idx]
-            elseif gen_name == "Wind"  
-                availability = (τ == 1) ? actual_wind[t] : mean_wind_forecast[actual_horizon_idx]
-            elseif gen_name == "Gas"
-                availability = (τ == 1) ? gas_availability[t] : mean_gas_forecast[actual_horizon_idx]
-            else
-                availability = 1.0
-            end
+            # Use generator-indexed availability profiles
+            availability = (τ == 1) ? availabilities[g][t] : mean_generator_forecasts[g][actual_horizon_idx]
             
             set_normalized_rhs(constraint_refs["generation"][gen_name][τ], capacities[g] * availability)
         end
@@ -899,17 +872,16 @@ end
 """
     update_and_solve_slac(model, variables, constraint_refs, generators, battery, 
                           capacities, battery_power_cap, battery_energy_cap, current_soc, t,
-                          actual_demand, actual_wind, nuclear_availability, gas_availability,
-                          demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+                          actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
                           horizon, params, scenario_weights)
 
 Update the SLAC model with current time-step data and scenario forecasts, then solve with warm start.
+Uses generator-indexed availability profiles.
 """
 function update_and_solve_slac(model, variables, constraint_refs, generators, battery, 
                                capacities, battery_power_cap, battery_energy_cap, 
                                current_soc::Float64, t::Int,
-                               actual_demand, actual_wind, nuclear_availability, gas_availability,
-                               demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+                               actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
                                horizon, params, scenario_weights; model_cache=nothing)
     
     # Track current time step for debugging
@@ -964,15 +936,8 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
         for (τ_idx, τ) in enumerate(1:H)
             actual_horizon_idx = horizon[τ_idx]
             for s in 1:S
-                if gen_name == "Nuclear"
-                    availability = (τ == 1) ? nuclear_availability[t] : nuclear_avail_scenarios[s][actual_horizon_idx]
-                elseif gen_name == "Wind"
-                    availability = (τ == 1) ? actual_wind[t] : wind_scenarios[s][actual_horizon_idx]
-                elseif gen_name == "Gas"
-                    availability = (τ == 1) ? gas_availability[t] : gas_avail_scenarios[s][actual_horizon_idx]
-                else
-                    availability = 1.0
-                end
+                # Use generator-indexed availability profiles
+                availability = (τ == 1) ? availabilities[g][t] : generator_availability_scenarios[s][g][actual_horizon_idx]
                 
                 set_normalized_rhs(constraint_refs["generation"][gen_name][τ, s], capacities[g] * availability)
                 gen_constraint_updates += 1
@@ -1117,25 +1082,23 @@ function solve_dlac_i_operations_cached(generators, battery, capacities, battery
                                         lookahead_hours=24, output_dir="results")
     params = profiles.params
     
-    # Get forecast data (same as original function)
+    # Get forecast data with new generator-indexed structure
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
+    availabilities = profiles.generator_availabilities
     demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
+    generator_availability_scenarios = profiles.generator_availability_scenarios
     
     T = params.hours
     G = length(generators)
     S = length(demand_scenarios)
     
-    # Compute mean forecasts from scenarios (same as original)
+    # Compute mean forecasts from scenarios with generator-indexed structure
     mean_demand_forecast = [mean([demand_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_wind_forecast = [mean([wind_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_nuclear_avail_forecast = [mean([nuclear_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_gas_avail_forecast = [mean([gas_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
+    # Mean availability forecasts for each generator: mean_generator_forecasts[g][t]
+    mean_generator_forecasts = Vector{Vector{Float64}}(undef, G)
+    for g in 1:G
+        mean_generator_forecasts[g] = [mean([generator_availability_scenarios[s][g][t] for s in 1:S]) for t in 1:T]
+    end
     
     # Check if model needs to be rebuilt or capacity constraints updated
     capacities_changed = (model_cache.last_capacities != capacities || 
@@ -1179,15 +1142,11 @@ function solve_slac_operations_cached(generators, battery, capacities, battery_p
                                      lookahead_hours=24, output_dir="results", scenario_weights=nothing)
     params = profiles.params
     
-    # Get scenario data (same as original function)
+    # Get scenario data with new generator-indexed structure
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
+    availabilities = profiles.generator_availabilities
     demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
+    generator_availability_scenarios = profiles.generator_availability_scenarios
     
     T = params.hours
     G = length(generators)
@@ -1338,25 +1297,23 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
                                         lookahead_hours, output_dir)
     params = profiles.params
     
-    # Get forecast data
+    # Get forecast data with new generator-indexed structure
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
+    availabilities = profiles.generator_availabilities
     demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
+    generator_availability_scenarios = profiles.generator_availability_scenarios
     
     T = params.hours
     G = length(generators)
     S = length(demand_scenarios)
     
-    # Compute mean forecasts from scenarios
+    # Compute mean forecasts from scenarios with generator-indexed structure
     mean_demand_forecast = [mean([demand_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_wind_forecast = [mean([wind_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_nuclear_avail_forecast = [mean([nuclear_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
-    mean_gas_avail_forecast = [mean([gas_avail_scenarios[s][t] for s in 1:S]) for t in 1:T]
+    # Mean availability forecasts for each generator: mean_generator_forecasts[g][t]
+    mean_generator_forecasts = Vector{Vector{Float64}}(undef, G)
+    for g in 1:G
+        mean_generator_forecasts[g] = [mean([generator_availability_scenarios[s][g][t] for s in 1:S]) for t in 1:T]
+    end
     
     println("Solving DLAC-i Operations with cached model ($(lookahead_hours)-hour lookahead for $T hours)")
     
@@ -1385,8 +1342,7 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
             cached_model, cached_variables, cached_constraint_refs, generators, battery, 
             capacities, battery_power_cap, battery_energy_cap,
             current_soc, t,
-            actual_demand, actual_wind, nuclear_availability, gas_availability,
-            mean_demand_forecast, mean_wind_forecast, mean_nuclear_avail_forecast, mean_gas_avail_forecast,
+            actual_demand, availabilities, mean_demand_forecast, mean_generator_forecasts,
             horizon, params
         )
         
@@ -1433,8 +1389,7 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
                                (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
                                battery.var_om_cost * (battery_charge_schedule[t] + battery_discharge_schedule[t]) +
                                params.load_shed_penalty * (load_shed_fixed_schedule[t] + 0.5 * load_shed_flex_schedule[t]^2 / params.flex_demand_mw) for t in 1:T),
-        "nuclear_availability" => nuclear_availability,
-        "gas_availability" => gas_availability
+        "generator_availabilities" => availabilities
     )
     
     # Save operational results
@@ -1460,15 +1415,11 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
                                       lookahead_hours, output_dir, scenario_weights, model_cache=nothing, save_results=true)
     params = profiles.params
     
-    # Get scenario data
+    # Get scenario data with new generator-indexed structure
     actual_demand = profiles.actual_demand
-    actual_wind = profiles.actual_wind
-    nuclear_availability = profiles.actual_nuclear_availability
-    gas_availability = profiles.actual_gas_availability
+    availabilities = profiles.generator_availabilities
     demand_scenarios = profiles.demand_scenarios
-    wind_scenarios = profiles.wind_scenarios
-    nuclear_avail_scenarios = profiles.nuclear_availability_scenarios
-    gas_avail_scenarios = profiles.gas_availability_scenarios
+    generator_availability_scenarios = profiles.generator_availability_scenarios
     
     T = params.hours
     G = length(generators)
@@ -1505,8 +1456,7 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
             cached_model, cached_variables, cached_constraint_refs, generators, battery, 
             capacities, battery_power_cap, battery_energy_cap,
             current_soc, t,
-            actual_demand, actual_wind, nuclear_availability, gas_availability,
-            demand_scenarios, wind_scenarios, nuclear_avail_scenarios, gas_avail_scenarios,
+            actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
             horizon, params, scenario_weights; model_cache=model_cache
         )
         

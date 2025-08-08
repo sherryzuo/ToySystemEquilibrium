@@ -21,6 +21,7 @@ module ToySystemQuad
 
 # Include all submodules (order matters for dependencies)
 include("ProfileGeneration.jl")
+include("NYISODataLoader.jl")
 include("SystemConfig.jl") 
 include("OptimizationModels.jl")
 include("PlottingModule.jl")
@@ -30,6 +31,7 @@ include("EquilibriumModule.jl")
 # Re-export key functions from submodules
 using .SystemConfig
 using .ProfileGeneration
+using .NYISODataLoader
 using .OptimizationModels
 using .PlottingModule
 using .TestRunner
@@ -39,7 +41,7 @@ using .EquilibriumModule
 export run_complete_test_system
 
 # Core system creation and configuration
-export create_complete_toy_system, get_default_system_parameters
+export create_complete_toy_system, create_nyiso_system, get_default_system_parameters, get_nyiso_system_parameters
 export SystemProfiles, SystemParameters, Generator, Battery
 
 # Optimization models  

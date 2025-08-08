@@ -150,22 +150,17 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
     println("  Smoothing beta: $(equilibrium_params.smoothing_beta)")
     
     # Set up system configuration
-    println("\nSetting up system configuration...")
-        # Configure system parameters
-    params = SystemParameters(
-        720,     # hours (30 days)
-        30,      # days  
-        5,       # N (number of generators per technology fleet)
-        42,      # random_seed
-        10000.0, # load_shed_penalty ($/MWh)
-        0.001,   # load_shed_quad
-        100.0    # flex_demand_mw
-    )
+    println("\nSetting up NYISO system configuration...")
     
-    generators, battery, profiles = create_complete_toy_system(params)
-    println("System configured with:")
+    # Use NYISO system parameters (full year analysis)
+    nyiso_params = get_nyiso_system_parameters()
+    generators, battery, profiles = create_nyiso_system(nyiso_params)
+    params = profiles.params  # Get the actual parameters used by NYISO system
+    
+    println("NYISO system configured with:")
     println("  - $(params.hours)-hour horizon ($(params.days) days)")
     println("  - Flexible demand: $(params.flex_demand_mw) MW with quadratic pricing")
+    println("  - $(length(generators)) generators: $(join([g.name for g in generators], ", "))")
 
     # Run equilibrium based on policy choice
     results = Dict()

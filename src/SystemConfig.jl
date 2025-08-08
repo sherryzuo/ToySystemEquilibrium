@@ -9,12 +9,13 @@ module SystemConfig
 
 using ..ProfileGeneration
 using ..ProfileGeneration: SystemParameters
+using ..NYISODataLoader
 
 export Generator, Battery, SystemParameters, SystemProfiles
-export get_default_system_parameters
+export get_default_system_parameters, get_nyiso_system_parameters
 export create_nuclear_generator, create_wind_generator, create_gas_generator
 export create_battery_storage
-export generate_system_profiles, create_complete_toy_system
+export generate_system_profiles, create_complete_toy_system, create_nyiso_system
 export validate_system_configuration
 
 # =============================================================================
@@ -27,11 +28,12 @@ struct Generator
     var_om_cost::Float64    # $/MWh  
     inv_cost::Float64       # $/MW/year
     fixed_om_cost::Float64  # $/MW/year
-    max_capacity::Float64   # MW (for capacity expansion)
-    min_stable_gen::Float64 # Minimum stable generation as fraction of capacity
-    ramp_rate::Float64      # MW/h (as fraction of capacity)
-    efficiency::Float64     # p.u.
-    startup_cost::Float64   # $/startup
+    max_capacity::Float64   # MW (for capacity expansion) - not used as constraint
+    min_stable_gen::Float64 # Minimum stable generation as fraction of capacity - not used
+    ramp_rate::Float64      # MW/h (as fraction of capacity) - not used
+    efficiency::Float64     # p.u. - not used
+    startup_cost::Float64   # $/startup - not used
+    existing_capacity::Float64  # MW - existing capacity from NYISO data for reference
 end
 
 struct Battery
@@ -45,20 +47,17 @@ struct Battery
     efficiency_charge::Float64  # p.u.
     efficiency_discharge::Float64 # p.u.
     duration::Float64          # hours (energy/power ratio)
+    existing_power_capacity::Float64  # MW - existing power capacity from NYISO data
 end
 
 struct SystemProfiles
     # Actual profiles (realizations)
     actual_demand::Vector{Float64}
-    actual_wind::Vector{Float64}
-    actual_nuclear_availability::Vector{Float64}
-    actual_gas_availability::Vector{Float64}
+    generator_availabilities::Vector{Vector{Float64}}  # availabilities[g] for generator g
     
-    # Forecast scenarios (for DLAC-i)
-    demand_scenarios::Vector{Vector{Float64}}
-    wind_scenarios::Vector{Vector{Float64}}
-    nuclear_availability_scenarios::Vector{Vector{Float64}}
-    gas_availability_scenarios::Vector{Vector{Float64}}
+    # Forecast scenarios (indexed by scenario ω, then by generator g)
+    demand_scenarios::Vector{Vector{Float64}}  # demand_scenarios[ω] for scenario ω
+    generator_availability_scenarios::Vector{Vector{Vector{Float64}}}  # scenarios[ω][g] for scenario ω, generator g
     
     # Metadata
     n_scenarios::Int
@@ -87,6 +86,23 @@ function get_default_system_parameters()
 end
 
 """
+    get_nyiso_system_parameters()
+
+Returns system parameters optimized for NYISO full-year analysis.
+"""
+function get_nyiso_system_parameters()
+    return SystemParameters(
+        8760,   # hours (full year)
+        365,    # days (full year)
+        1,      # N (individual generators, not fleets)
+        42,     # random_seed
+        10000.0, # load_shed_penalty
+        0.001,   # load_shed_quad
+        1000.0   # flex_demand_mw (scaled up for full system)
+    )
+end
+
+"""
     create_nuclear_generator()
 
 Create nuclear generator with default parameters.
@@ -103,7 +119,8 @@ function create_nuclear_generator()
         0.9,          # min_stable_gen (fraction)
         0.1,          # ramp_rate (fraction/hour)
         0.33,         # efficiency
-        2000.0        # startup_cost ($)
+        2000.0,       # startup_cost ($)
+        0.0           # existing_capacity (MW)
     )
 end
 
@@ -124,7 +141,8 @@ function create_wind_generator()
         0.0,          # min_stable_gen (fraction)
         1.0,          # ramp_rate (fraction/hour)
         1.0,          # efficiency
-        0.0           # startup_cost ($)
+        0.0,          # startup_cost ($)
+        0.0           # existing_capacity (MW)
     )
 end
 
@@ -145,7 +163,8 @@ function create_gas_generator()
         0.2,          # min_stable_gen (fraction)
         1.0,          # ramp_rate (fraction/hour)
         0.45,         # efficiency
-        80.0          # startup_cost ($)
+        80.0,         # startup_cost ($)
+        0.0           # existing_capacity (MW)
     )
 end
 
@@ -166,7 +185,8 @@ function create_battery_storage()
         3200.0,       # max_energy_capacity (MWh)
         0.90,         # efficiency_charge
         0.90,         # efficiency_discharge
-        4.0           # duration (hours)
+        4.0,          # duration (hours)
+        0.0           # existing_power_capacity (MW)
     )
 end
 
@@ -264,6 +284,43 @@ function create_complete_toy_system(params::SystemParameters)
         profiles.actual_gas_availability, 
         params
     )
+    
+    return generators, battery, profiles
+end
+
+"""
+    create_nyiso_system(params::SystemParameters=get_nyiso_system_parameters(); nyiso_data_path::String="NYISO_System")
+
+Create the complete NYISO system using real NYISO data including generator parameters and profiles.
+Returns generators, battery, and system profiles loaded from NYISO data files.
+"""
+function create_nyiso_system(params::SystemParameters=get_nyiso_system_parameters(); nyiso_data_path::String="NYISO_System")
+    # Load NYISO data from CSV files
+    thermal_df, vre_df, hydro_df, storage_df = NYISODataLoader.load_nyiso_generators(nyiso_data_path)
+    demand_df = NYISODataLoader.load_nyiso_demand(nyiso_data_path)
+    fuels_df = NYISODataLoader.load_nyiso_fuels(nyiso_data_path)
+    variability_df = NYISODataLoader.load_nyiso_variability(nyiso_data_path)
+    
+    # Process generators 
+    thermal_generators = NYISODataLoader.process_nyiso_thermal_generators(thermal_df, fuels_df, Generator)
+    renewable_generators = NYISODataLoader.process_nyiso_renewable_generators(vre_df, hydro_df, Generator)
+    
+    # Combine all generators
+    generators = vcat(thermal_generators, renewable_generators)
+    
+    # Process storage
+    battery = NYISODataLoader.process_nyiso_storage(storage_df, Battery)
+    
+    # Create system profiles from NYISO data
+    profiles = NYISODataLoader.create_nyiso_system_profiles(demand_df, variability_df, generators, params, SystemProfiles)
+    
+    # Validate everything
+    validate_system_configuration(generators, battery, params)
+    
+    println("✓ NYISO system created successfully with $(length(generators)) generators")
+    println("  - Thermal generators: $(length(thermal_generators))")
+    println("  - Renewable generators: $(length(renewable_generators))")
+    println("  - Battery storage: $(battery.name)")
     
     return generators, battery, profiles
 end

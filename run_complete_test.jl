@@ -3,8 +3,8 @@
 """
 run_complete_test.jl
 
-Main script to run the complete ToySystemQuad test system.
-Executes all three optimization models with full system parameters.
+Main script to run the complete NYISO system test.
+Executes all three optimization models with real NYISO data and full-year analysis.
 """
 
 using Revise
@@ -12,30 +12,32 @@ using Revise
 using ToySystemQuad
 
 function main()
-    println("Starting Complete ToySystemQuad Test System")
+    println("Starting Complete NYISO System Test")
     
-    # Configure system parameters
-    params = SystemParameters(
-        720,     # hours (30 days)
-        30,      # days  
-        5,       # N (number of generators per technology fleet)
-        42,      # random_seed
-        10000.0, # load_shed_penalty ($/MWh)
-        0.001,   # load_shed_quad
-        100.0    # flex_demand_mw
-    )
+    # Use NYISO system parameters (full year analysis)
+    params = get_nyiso_system_parameters()
     
-    println("This will run all three optimization models with:")
-    println("  - $(params.hours)-hour horizon ($(params.days) days)")
-    println("  - Fleet-based thermal generation ($(params.N) generators per technology)")
-    println("  - 5 stochastic scenarios for DLAC-i operations")
-    println("  - Realistic wind forecast error modeling")
+    println("This will run all three optimization models with NYISO data:")
+    println("  - $(params.hours)-hour horizon ($(params.days) days) - FULL YEAR")
+    println("  - Real NYISO generator data with 7 technology types")
+    println("  - $(params.N) stochastic scenarios for DLAC-i and SLAC operations")
+    println("  - Real wind, solar, and load profiles from NYISO")
     println("  - Flexible demand: $(params.flex_demand_mw) MW with quadratic pricing")
     println("  - Random seed: $(params.random_seed)")
     println()
     
-    # Run the complete test system with configured parameters
-    results = run_complete_test_system(params=params, output_dir="results")
+    # Create NYISO system
+    println("Creating NYISO system...")
+    generators, battery, profiles = create_nyiso_system(params)
+    
+    println("NYISO system created with:")
+    println("  - $(length(generators)) generator types: $(join([g.name for g in generators], ", "))")
+    println("  - Battery storage: $(battery.name)")
+    println("  - Peak demand: $(round(maximum(profiles.actual_demand), digits=0)) MW")
+    println()
+    
+    # Run the complete test system with NYISO data
+    results = run_complete_test_system_nyiso(generators, battery, profiles, output_dir="results")
     
     if results["status"] == "success"
         println("\n✅ SUCCESS: All models completed successfully!")
