@@ -10,7 +10,7 @@ Three core optimization models for ToySystemQuad.jl:
 module OptimizationModels
 
 using JuMP, Gurobi, LinearAlgebra, CSV, DataFrames, Statistics
-using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles, get_default_system_parameters
+using ..SystemConfig: Generator, Battery, SystemParameters, SystemProfiles
 
 export solve_capacity_expansion_model, solve_perfect_foresight_operations
 export save_operational_results, calculate_profits_and_save, compute_pmr
@@ -68,7 +68,7 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     @variable(model, p_flex[1:G, 1:T] >= 0)  # Generation for flexible demand
     @variable(model, p_ch[1:T] >= 0)  # Battery charging
     @variable(model, p_dis[1:T] >= 0)  # Battery discharging
-    @variable(model, soc[1:T])  # Battery state of charge (no upper/lower bounds as requested)
+    @variable(model, soc[1:T] >= 0)  # Battery state of charge (consistent with PF model)
     @variable(model, δ_d_fixed[1:T] >= 0)  # Fixed demand load shedding
     @variable(model, δ_d_flex[1:T] >= 0)  # Flexible demand load shedding
     
@@ -104,14 +104,21 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     @constraint(model, [t=1:T], p_ch[t] <= y_bat_power)
     @constraint(model, [t=1:T], p_dis[t] <= y_bat_power)
     
-    # Battery SOC dynamics (no upper/lower bounds on SOC)
+    # Battery SOC dynamics 
     @constraint(model, soc[1] == y_bat_energy * 0.5 + 
         battery.efficiency_charge * p_ch[1] - p_dis[1]/battery.efficiency_discharge)
     @constraint(model, [t=2:T], soc[t] == soc[t-1] + 
         battery.efficiency_charge * p_ch[t] - p_dis[t]/battery.efficiency_discharge)
     
+    # Battery SOC bounds (energy capacity constraint)
+    @constraint(model, [t=1:T], soc[t] <= y_bat_energy)
+    
     # Battery energy/power ratio
     @constraint(model, y_bat_energy <= y_bat_power * battery.duration)
+    
+    # End-of-horizon boundary conditions (consistent with PF model)
+    @constraint(model, soc[T] >= y_bat_energy * 0.4)
+    @constraint(model, soc[T] <= y_bat_energy * 0.6)
     
     optimize!(model)
     
@@ -232,6 +239,9 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
         battery.efficiency_charge * p_ch[1] - p_dis[1]/battery.efficiency_discharge)
     @constraint(model, [t=2:T], soc[t] == soc[t-1] + 
         battery.efficiency_charge * p_ch[t] - p_dis[t]/battery.efficiency_discharge)
+    
+    # Battery energy/power ratio (consistent with CEM)
+    @constraint(model, battery_energy_cap <= battery_power_cap * battery.duration)
     
     # Boundary conditions
     @constraint(model, soc[T] >= battery_energy_cap * 0.4)

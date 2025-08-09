@@ -20,7 +20,6 @@ Gas (peaker fleet), and Battery (storage).
 module ToySystemQuad
 
 # Include all submodules (order matters for dependencies)
-include("ProfileGeneration.jl")
 include("NYISODataLoader.jl")
 include("SystemConfig.jl") 
 include("OptimizationModels.jl")
@@ -30,7 +29,6 @@ include("EquilibriumModule.jl")
 
 # Re-export key functions from submodules
 using .SystemConfig
-using .ProfileGeneration
 using .NYISODataLoader
 using .OptimizationModels
 using .PlottingModule
@@ -38,10 +36,10 @@ using .TestRunner
 using .EquilibriumModule
 
 # Export main functions for external use
-export run_complete_test_system
+export run_complete_test_system_nyiso
 
 # Core system creation and configuration
-export create_complete_toy_system, create_nyiso_system, get_default_system_parameters, get_nyiso_system_parameters
+export create_nyiso_system, get_nyiso_system_parameters
 export SystemProfiles, SystemParameters, Generator, Battery
 
 # Optimization models  
@@ -50,9 +48,6 @@ export solve_capacity_expansion_model, solve_perfect_foresight_operations
 export ModelCache, solve_dlac_i_operations_cached, solve_slac_operations_cached
 export build_dlac_i_model, update_and_solve_dlac_i, build_slac_model, update_and_solve_slac
 
-# Profile generation functions
-export generate_system_profiles, generate_wind_forecast
-export generate_fleet_availability, generate_single_nuclear_availability, generate_single_gas_availability
 
 # Analysis and plotting
 export calculate_profits_and_save, compute_pmr
@@ -65,6 +60,6 @@ export save_equilibrium_results, analyze_equilibrium_convergence, resume_from_lo
 export PolicyFunction, PerfectForesight, DLAC_i, SLAC
 
 # Validation
-export validate_system_configuration, validate_profiles
+export validate_system_configuration
 
 end # module ToySystemQuad
