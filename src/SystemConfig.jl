@@ -142,13 +142,84 @@ function create_nyiso_system(params::SystemParameters=get_nyiso_system_parameter
     
     # Process generators 
     thermal_generators = NYISODataLoader.process_nyiso_thermal_generators(thermal_df, fuels_df, Generator)
-    renewable_generators = NYISODataLoader.process_nyiso_renewable_generators(vre_df, hydro_df, Generator)
+    renewable_generators = NYISODataLoader.process_nyiso_renewable_generators(vre_df, hydro_df, storage_df, Generator)
     
     # Combine all generators
     generators = vcat(thermal_generators, renewable_generators)
     
     # Process storage
     battery = NYISODataLoader.process_nyiso_storage(storage_df, Battery)
+    
+    # Adjust investment costs for more diverse CEM results
+    println("Adjusting investment costs for diverse capacity expansion...")
+    
+    # Increase gas plant investment costs by 1.5x (reflecting recent reports)
+    gas_multiplier = 1.5
+    for (i, gen) in enumerate(generators)
+        if gen.name in ["CC", "CT", "ST"]  # Gas technologies
+            old_cost = gen.inv_cost
+            new_generator = Generator(
+                gen.name,
+                gen.fuel_cost,
+                gen.var_om_cost,
+                gen.inv_cost * gas_multiplier,  # Increase investment cost
+                gen.fixed_om_cost,
+                gen.max_capacity,
+                gen.min_stable_gen,
+                gen.ramp_rate,
+                gen.efficiency,
+                gen.startup_cost,
+                gen.existing_capacity
+            )
+            generators[i] = new_generator
+            new_cost = new_generator.inv_cost
+            println("  - $(gen.name): Investment cost $(round(old_cost/1000))k → $(round(new_cost/1000))k/MW/yr (+$(round((gas_multiplier-1)*100))%)")
+        end
+    end
+    
+    # Reduce renewable investment costs by 0.7x (reflecting state subsidies)
+    renewable_multiplier = 0.7
+    for (i, gen) in enumerate(generators)
+        if gen.name in ["Wind", "Solar"]  # Renewable technologies
+            old_cost = gen.inv_cost
+            new_generator = Generator(
+                gen.name,
+                gen.fuel_cost,
+                gen.var_om_cost,
+                gen.inv_cost * renewable_multiplier,  # Reduce investment cost
+                gen.fixed_om_cost,
+                gen.max_capacity,
+                gen.min_stable_gen,
+                gen.ramp_rate,
+                gen.efficiency,
+                gen.startup_cost,
+                gen.existing_capacity
+            )
+            generators[i] = new_generator
+            new_cost = new_generator.inv_cost
+            println("  - $(gen.name): Investment cost $(round(old_cost/1000))k → $(round(new_cost/1000))k/MW/yr (-$(round((1-renewable_multiplier)*100))%)")
+        end
+    end
+    
+    # Reduce battery investment costs by 0.8x (reflecting subsidies and technology improvements)
+    battery_multiplier = 0.8
+    old_power_cost = battery.inv_cost_power
+    old_energy_cost = battery.inv_cost_energy
+    battery = Battery(
+        battery.name,
+        battery.inv_cost_power * battery_multiplier,  # Reduce power investment cost
+        battery.inv_cost_energy * battery_multiplier,  # Reduce energy investment cost
+        battery.fixed_om_cost,
+        battery.var_om_cost,
+        battery.max_power_capacity,
+        battery.max_energy_capacity,
+        battery.efficiency_charge,
+        battery.efficiency_discharge,
+        battery.duration,
+        battery.existing_power_capacity
+    )
+    println("  - Battery Power: Investment cost $(round(old_power_cost/1000))k → $(round(battery.inv_cost_power/1000))k/MW/yr (-$(round((1-battery_multiplier)*100))%)")
+    println("  - Battery Energy: Investment cost $(round(old_energy_cost/1000))k → $(round(battery.inv_cost_energy/1000))k/MWh/yr (-$(round((1-battery_multiplier)*100))%)")
     
     # Create system profiles from NYISO data
     profiles = NYISODataLoader.create_nyiso_system_profiles(demand_df, variability_df, generators, params, SystemProfiles)

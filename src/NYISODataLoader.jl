@@ -14,7 +14,7 @@ using Statistics
 
 export load_nyiso_generators, load_nyiso_demand, load_nyiso_fuels, load_nyiso_variability
 export create_nyiso_system_profiles, process_nyiso_thermal_generators
-export process_nyiso_renewable_generators, process_nyiso_storage
+export process_nyiso_renewable_generators, process_nyiso_storage, interpolate_zero_values
 
 # =============================================================================
 # NYISO DATA LOADING FUNCTIONS
@@ -74,6 +74,67 @@ function load_nyiso_variability(data_path::String)
     variability_path = joinpath(data_path, "system", "Generators_variability.csv")
     variability_df = CSV.read(variability_path, DataFrame)
     return variability_df
+end
+
+# =============================================================================
+# DATA PROCESSING UTILITY FUNCTIONS
+# =============================================================================
+
+"""
+    interpolate_zero_values(data::Vector{Float64})
+
+Replace zero values in time series data with linear interpolation between adjacent non-zero values.
+This is useful for filling gaps in demand data where zeros indicate missing data points.
+"""
+function interpolate_zero_values(data::Vector{Float64})
+    # Create a copy to avoid modifying the original
+    interpolated = copy(data)
+    n = length(interpolated)
+    
+    # Find all zero indices
+    zero_indices = findall(x -> x == 0.0, interpolated)
+    
+    if isempty(zero_indices)
+        return interpolated  # No zeros to interpolate
+    end
+    
+    println("Found $(length(zero_indices)) zero values in data, interpolating...")
+    
+    for i in zero_indices
+        # Find previous non-zero value
+        prev_idx = i - 1
+        while prev_idx >= 1 && interpolated[prev_idx] == 0.0
+            prev_idx -= 1
+        end
+        
+        # Find next non-zero value
+        next_idx = i + 1
+        while next_idx <= n && interpolated[next_idx] == 0.0
+            next_idx += 1
+        end
+        
+        # Interpolate based on available neighbors
+        if prev_idx >= 1 && next_idx <= n
+            # Linear interpolation between prev and next
+            prev_val = interpolated[prev_idx]
+            next_val = interpolated[next_idx]
+            steps = next_idx - prev_idx
+            step_size = (next_val - prev_val) / steps
+            interpolated[i] = prev_val + step_size * (i - prev_idx)
+        elseif prev_idx >= 1
+            # Use previous value (extrapolate backwards)
+            interpolated[i] = interpolated[prev_idx]
+        elseif next_idx <= n
+            # Use next value (extrapolate forwards)
+            interpolated[i] = interpolated[next_idx]
+        else
+            # All values are zero, use a reasonable default (this shouldn't happen with real demand data)
+            interpolated[i] = 1000.0  # Default 1000 MW
+            println("Warning: All demand values are zero, using default value")
+        end
+    end
+    
+    return interpolated
 end
 
 # =============================================================================
@@ -177,12 +238,13 @@ function process_nyiso_thermal_generators(thermal_df::DataFrame, fuels_df::DataF
 end
 
 """
-    process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFrame)
+    process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFrame, storage_df::DataFrame)
 
 Process NYISO renewable generators (Wind, Solar, Hydro) into representative technology types.
 Returns Vector of Generator structs for Wind, Solar, and Hydro.
+Note: Uses PumpedHydro_NY from storage_df for hydro costs instead of hydro_df.
 """
-function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFrame, Generator)
+function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFrame, storage_df::DataFrame, Generator)
     generators = Generator[]
     
     # Process Wind generators (use new for costs, existing for capacity reference)
@@ -233,25 +295,48 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
         push!(generators, solar_gen)
     end
     
-    # Process Hydro generators (model as thermal unit, not storage)
-    if nrow(hydro_df) > 0
-        hydro_row = hydro_df[1, :]  # Use first hydro as representative
+    # Process Hydro generators using PumpedHydro_NY from storage_df for costs
+    # Find pumped hydro in storage data
+    pumped_hydro = filter(row -> occursin("PumpedHydro", row.Resource), storage_df)
+    regular_hydro = nrow(hydro_df) > 0 ? hydro_df[1, :] : nothing
+    
+    if nrow(pumped_hydro) > 0
+        pumped_row = pumped_hydro[1, :]  # Use PumpedHydro_NY
+        existing_capacity = regular_hydro !== nothing ? regular_hydro.Existing_Cap_MW : pumped_row.Existing_Cap_MW
         
-        # Since hydro is existing with zero inv_cost, use a reasonable default
-        hydro_inv_cost = hydro_row.Inv_Cost_per_MWyr > 0 ? hydro_row.Inv_Cost_per_MWyr : 200000.0  # Default hydro investment cost
+        # Use pumped hydro investment cost if available, otherwise default
+        hydro_inv_cost = pumped_row.Inv_Cost_per_MWyr > 0 ? pumped_row.Inv_Cost_per_MWyr : 200000.0
         
         hydro_gen = Generator(
             "Hydro",                        # name
             0.0,                            # fuel_cost
-            hydro_row.Var_OM_Cost_per_MWh, # var_om_cost
-            hydro_inv_cost,                 # inv_cost (use default if zero)
-            hydro_row.Fixed_OM_Cost_per_MWyr, # fixed_om_cost
+            pumped_row.Var_OM_Cost_per_MWh, # var_om_cost (from pumped hydro)
+            hydro_inv_cost,                 # inv_cost (from pumped hydro)
+            pumped_row.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from pumped hydro)
             50000.0,                       # max_capacity (not used as constraint)
             0.0,                           # min_stable_gen (not used)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
             0.0,                           # startup_cost (not used)
-            hydro_row.Existing_Cap_MW      # existing_capacity
+            existing_capacity              # existing_capacity (use regular hydro capacity if available)
+        )
+        push!(generators, hydro_gen)
+    elseif regular_hydro !== nothing
+        # Fallback to regular hydro if no pumped hydro found
+        hydro_inv_cost = regular_hydro.Inv_Cost_per_MWyr > 0 ? regular_hydro.Inv_Cost_per_MWyr : 200000.0
+        
+        hydro_gen = Generator(
+            "Hydro",                        # name
+            0.0,                            # fuel_cost
+            regular_hydro.Var_OM_Cost_per_MWh, # var_om_cost
+            hydro_inv_cost,                 # inv_cost
+            regular_hydro.Fixed_OM_Cost_per_MWyr, # fixed_om_cost
+            50000.0,                       # max_capacity (not used as constraint)
+            0.0,                           # min_stable_gen (not used)
+            1.0,                           # ramp_rate (not used)
+            1.0,                           # efficiency (not used)
+            0.0,                           # startup_cost (not used)
+            regular_hydro.Existing_Cap_MW   # existing_capacity
         )
         push!(generators, hydro_gen)
     end
@@ -306,10 +391,13 @@ function process_nyiso_storage(storage_df::DataFrame, Battery)
         )
     end
     
+    # Enforce energy cost = power cost / duration relationship
+    corrected_energy_inv_cost = power_inv_cost / cost_row.Max_Duration
+    
     battery = Battery(
         cost_row.Resource,
         power_inv_cost,                   # inv_cost_power
-        energy_inv_cost,                  # inv_cost_energy
+        corrected_energy_inv_cost,        # inv_cost_energy (corrected)
         cost_row.Fixed_OM_Cost_per_MWyr,  # fixed_om_cost
         cost_row.Var_OM_Cost_per_MWh,     # var_om_cost
         10000.0,                          # max_power_capacity (set reasonable upper limit)
@@ -336,6 +424,9 @@ function create_nyiso_system_profiles(demand_df::DataFrame, variability_df::Data
     # Extract demand profile (use first zone for simplicity)
     demand_column = names(demand_df)[end]  # Last column should be demand
     actual_demand = Vector{Float64}(demand_df[1:params.hours, demand_column])
+    
+    # Fill zero values by linear interpolation
+    actual_demand = interpolate_zero_values(actual_demand)
     
     # Create generator-specific availability profiles
     G = length(generators)

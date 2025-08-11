@@ -168,23 +168,55 @@ function run_complete_test_system_nyiso(generators, battery, profiles; output_di
     # Save profiles to CSV
     save_nyiso_system_profiles(profiles, output_dir)
     
-    # STEP 1: Capacity Expansion Model
-    println("\n" * repeat("=", 25) * " CAPACITY EXPANSION MODEL " * repeat("=", 25))
-    println("TESTING")
-    cem_result = solve_capacity_expansion_model(generators, battery, profiles; 
-                                               output_dir=output_dir)
+    # STEP 1: Capacity Expansion Model (COMMENTED OUT FOR TESTING)
+    # println("\n" * repeat("=", 25) * " CAPACITY EXPANSION MODEL " * repeat("=", 25))
+    # println("TESTING")
+    # cem_result = solve_capacity_expansion_model(generators, battery, profiles; 
+    #                                            output_dir=output_dir)
+    # 
+    # if cem_result["status"] != "optimal"
+    #     println("❌ Capacity Expansion Model failed: $(cem_result["status"])")
+    #     return Dict("status" => "failed", "stage" => "CEM", "result" => cem_result)
+    # end
+    # 
+    # println("✅ Capacity Expansion Model solved successfully!")
+    # optimal_capacities = cem_result["capacity"]
+    # optimal_battery_power = cem_result["battery_power_cap"]
+    # optimal_battery_energy = cem_result["battery_energy_cap"]
+    # 
+    # print_capacity_results(generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
     
-    if cem_result["status"] != "optimal"
-        println("❌ Capacity Expansion Model failed: $(cem_result["status"])")
-        return Dict("status" => "failed", "stage" => "CEM", "result" => cem_result)
-    end
+    # Use existing capacities instead
+    println("\n" * repeat("=", 25) * " USING EXISTING CAPACITIES " * repeat("=", 26))
+    println("TESTING WITH EXISTING NYISO CAPACITIES")
     
-    println("✅ Capacity Expansion Model solved successfully!")
-    optimal_capacities = cem_result["capacity"]
-    optimal_battery_power = cem_result["battery_power_cap"]
-    optimal_battery_energy = cem_result["battery_energy_cap"]
+    optimal_capacities = [gen.existing_capacity for gen in generators]
+    optimal_battery_power = battery.existing_power_capacity
+    optimal_battery_energy = optimal_battery_power * battery.duration
     
+    println("✅ Using existing NYISO capacities!")
     print_capacity_results(generators, battery, optimal_capacities, optimal_battery_power, optimal_battery_energy)
+    
+    # Create dummy CEM result for compatibility
+    G = length(generators)
+    T = profiles.params.hours
+    cem_result = Dict(
+        "status" => "optimal",
+        "model_type" => "existing_capacities", 
+        "capacity" => optimal_capacities,
+        "battery_power_cap" => optimal_battery_power,
+        "battery_energy_cap" => optimal_battery_energy,
+        "total_cost" => 0.0,
+        "generation" => zeros(G, T),  # Dummy generation data
+        "generation_flex" => zeros(G, T),  # Dummy flexible generation data
+        "battery_charge" => zeros(T),  # Dummy battery charge data
+        "battery_discharge" => zeros(T),  # Dummy battery discharge data
+        "battery_soc" => zeros(T),  # Dummy SOC data
+        "load_shed" => zeros(T),  # Dummy load shed data
+        "load_shed_fixed" => zeros(T),
+        "load_shed_flex" => zeros(T),
+        "prices" => zeros(T)  # Dummy prices
+    )
     
     println("\n✓ Initializing model cache for operations...")
     model_cache = ModelCache(24, profiles.n_scenarios)  

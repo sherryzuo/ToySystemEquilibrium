@@ -255,25 +255,102 @@ end
     plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
 
 Plot system demand and availability profiles from SystemProfiles struct.
+For NYISO case, shows demand and first few generator availability profiles.
 """
 function plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
     T = length(profiles.actual_demand)
     hours = 1:T
+    G = length(profiles.generator_availabilities)
     
     # Create subplots with paper-quality styling
     p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
               color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
-    p2 = plot(hours, profiles.actual_wind, title="Wind Capacity Factor", xlabel="Hour", ylabel="Capacity Factor",
-              color=PAPER_COLORS[3], legend=false, ylims=(0, 1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+    # Show availability profiles for first few generators (up to 3 additional plots)
+    plots = [p1]
+    max_gen_plots = min(3, G)  # Show up to 3 generator availability profiles
     
-    p3 = plot(hours, profiles.actual_nuclear_availability, title="Nuclear Availability", xlabel="Hour", ylabel="Available",
-              color=PAPER_COLORS[2], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+    for g in 1:max_gen_plots
+        gen_title = "Generator $g Availability"
+        p_gen = plot(hours, profiles.generator_availabilities[g], 
+                    title=gen_title, xlabel="Hour", ylabel="Capacity Factor",
+                    color=PAPER_COLORS[g+1], legend=false, ylims=(0, 1.1), 
+                    left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+        push!(plots, p_gen)
+    end
     
-    p4 = plot(hours, profiles.actual_gas_availability, title="Gas Availability", xlabel="Hour", ylabel="Available",
-              color=PAPER_COLORS[4], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+    # Create layout based on number of plots
+    n_plots = length(plots)
+    if n_plots == 4
+        layout = (2,2)
+        plot_size = (8*72, 6*72)
+    elseif n_plots == 3
+        layout = (2,2)  # Will leave one space empty
+        plot_size = (8*72, 6*72)
+    elseif n_plots == 2
+        layout = (1,2)
+        plot_size = (8*72, 3*72)
+    else
+        layout = (1,1)
+        plot_size = (4*72, 3*72)
+    end
     
-    combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(8*72, 6*72))
+    combined_plot = plot(plots..., layout=layout, size=plot_size)
+    
+    if save_path !== nothing
+        savefig(combined_plot, save_path)
+        println("System profiles plot saved: $save_path")
+    end
+    
+    return combined_plot
+end
+
+"""
+    plot_system_profiles(profiles::SystemProfiles, generators; save_path=nothing)
+
+Plot system demand and availability profiles from SystemProfiles struct with meaningful generator names.
+For NYISO case, shows demand and first few generator availability profiles with actual technology names.
+"""
+function plot_system_profiles(profiles::SystemProfiles, generators; save_path=nothing)
+    T = length(profiles.actual_demand)
+    hours = 1:T
+    G = length(profiles.generator_availabilities)
+    
+    # Create subplots with paper-quality styling
+    p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
+              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+    
+    # Show availability profiles for first few generators (up to 3 additional plots)
+    plots = [p1]
+    max_gen_plots = min(3, G)  # Show up to 3 generator availability profiles
+    
+    for g in 1:max_gen_plots
+        gen_name = g <= length(generators) ? generators[g].name : "Generator $g"
+        gen_title = "$gen_name Availability"
+        p_gen = plot(hours, profiles.generator_availabilities[g], 
+                    title=gen_title, xlabel="Hour", ylabel="Capacity Factor",
+                    color=PAPER_COLORS[g+1], legend=false, ylims=(0, 1.1), 
+                    left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+        push!(plots, p_gen)
+    end
+    
+    # Create layout based on number of plots
+    n_plots = length(plots)
+    if n_plots == 4
+        layout = (2,2)
+        plot_size = (8*72, 6*72)
+    elseif n_plots == 3
+        layout = (2,2)  # Will leave one space empty
+        plot_size = (8*72, 6*72)
+    elseif n_plots == 2
+        layout = (1,2)
+        plot_size = (8*72, 3*72)
+    else
+        layout = (1,1)
+        plot_size = (4*72, 3*72)
+    end
+    
+    combined_plot = plot(plots..., layout=layout, size=plot_size)
     
     if save_path !== nothing
         savefig(combined_plot, save_path)
@@ -557,8 +634,8 @@ function generate_all_plots(pf_result, dlac_result, slac_result, profiles::Syste
         plot_battery_soc_comparison(battery_detailed_results, model_names;
                                    save_path=joinpath(plots_dir, "battery_soc_comparison.png"))
         
-        # System profiles
-        plot_system_profiles(profiles; save_path=joinpath(plots_dir, "system_profiles.png"))
+        # System profiles (with generator names)
+        plot_system_profiles(profiles, generators; save_path=joinpath(plots_dir, "system_profiles.png"))
         
         # Capacity comparison
         plot_capacity_comparison(generators, battery, optimal_capacities, optimal_battery_power;

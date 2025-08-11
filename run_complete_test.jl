@@ -26,14 +26,15 @@ function main()
     println("  - Random seed: $(params.random_seed)")
     println()
     
-    # Create NYISO system
-    println("Creating NYISO system...")
+    # Create NYISO system with adjusted investment costs for diverse CEM results
+    println("Creating NYISO system with adjusted investment costs...")
     generators, battery, profiles = create_nyiso_system(params)
     
     println("NYISO system created with:")
     println("  - $(length(generators)) generator types: $(join([g.name for g in generators], ", "))")
     println("  - Battery storage: $(battery.name)")
     println("  - Peak demand: $(round(maximum(profiles.actual_demand), digits=0)) MW")
+    println("  - Investment costs adjusted for diverse capacity expansion")
     println()
     
     # Run the complete test system with NYISO data

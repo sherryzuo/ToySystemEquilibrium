@@ -240,7 +240,7 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
     @constraint(model, [t=2:T], soc[t] == soc[t-1] + 
         battery.efficiency_charge * p_ch[t] - p_dis[t]/battery.efficiency_discharge)
     
-    # Battery energy/power ratio (consistent with CEM)
+    # Battery energy/power ratio (for exact consistency with CEM)
     @constraint(model, battery_energy_cap <= battery_power_cap * battery.duration)
     
     # Boundary conditions
@@ -1453,9 +1453,9 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
     
     # Rolling horizon optimization using cached model
     for t in 1:T
-        if t % 100 == 0
-            println("  Processing hour $t/$T")
-        end
+        # if t % 100 == 0
+        #     println("  Processing hour $t/$T")
+        # end
         
         # Determine lookahead horizon
         horizon_end = min(t + lookahead_hours - 1, T)
