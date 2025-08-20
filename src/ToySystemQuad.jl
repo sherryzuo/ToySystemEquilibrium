@@ -23,9 +23,9 @@ module ToySystemQuad
 include("NYISODataLoader.jl")
 include("SystemConfig.jl") 
 include("OptimizationModels.jl")
+include("EquilibriumModule.jl")  # Moved earlier since TestRunner might depend on it
 include("PlottingModule.jl")
 include("TestRunner.jl")
-include("EquilibriumModule.jl")
 
 # Re-export key functions from submodules
 using .SystemConfig
@@ -41,6 +41,9 @@ export run_complete_test_system_nyiso
 # Core system creation and configuration
 export create_nyiso_system, get_nyiso_system_parameters
 export SystemProfiles, SystemParameters, Generator, Battery
+
+# HDF5 scenario loading functions
+export load_hdf5_scenarios, load_demand_scenarios, load_wind_scenarios, load_solar_scenarios
 
 # Optimization models  
 export solve_capacity_expansion_model, solve_perfect_foresight_operations
