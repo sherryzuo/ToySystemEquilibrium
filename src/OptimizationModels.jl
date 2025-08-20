@@ -78,8 +78,10 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
     @variable(model, δ_d_flex[1:T] >= 0)  # Flexible demand load shedding
     
     # Linearized unit commitment variables
+    # Startup and shutdown are bounded to [0,1] for valid McCormick relaxation
     @variable(model, 0 <= u[1:G, 1:T] <= 1)  # Commitment level (continuous, allows partial commitment)
-    @variable(model, 0 <= v[1:G, 1:T] <= 1)  # Startup variables (bounded for McCormick)
+    @variable(model, 0 <= v_start[1:G, 1:T] <= 1)  # Startup variables
+    @variable(model, 0 <= v_shut[1:G, 1:T] <= 1)   # Shutdown variables
 
     # McCormick relaxation for u[g,t] * y[g] → z[g,t]
     @variable(model, z[1:G, 1:T] >= 0)
@@ -91,13 +93,13 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
         end
     end
 
-    # McCormick relaxation for y[g] * v[g,t] → w[g,t]
-    @variable(model, w[1:G, 1:T] >= 0)
+    # McCormick relaxation for y[g] * v_start[g,t] → w_start[g,t]
+    @variable(model, w_start[1:G, 1:T] >= 0)
     for g in 1:G
         for t in 1:T
-            @constraint(model, w[g,t] <= y[g])
-            @constraint(model, w[g,t] <= y_max[g] * v[g,t])
-            @constraint(model, w[g,t] >= y[g] - y_max[g] * (1 - v[g,t]))
+            @constraint(model, w_start[g,t] <= y[g])
+            @constraint(model, w_start[g,t] <= y_max[g] * v_start[g,t])
+            @constraint(model, w_start[g,t] >= y[g] - y_max[g] * (1 - v_start[g,t]))
         end
     end
     
@@ -111,7 +113,7 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
                  
     operational_cost = sum(
         sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p[g,t] + p_flex[g,t]) for g in 1:G) +
-        sum(generators[g].startup_cost * w[g,t] for g in 1:G) +  # Startup costs via McCormick variable w
+        sum(generators[g].startup_cost * w_start[g,t] for g in 1:G) +  # Startup costs via McCormick variable w_start
         battery.var_om_cost * (p_ch[t] + p_dis[t]) +
         params.load_shed_penalty * (δ_d_fixed[t] + 0.5 * δ_d_flex[t]^2 / params.flex_demand_mw)
         for t in 1:T)
@@ -134,12 +136,12 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
         end
     end
     
-    # Linearized startup constraints: v[g,t] >= u[g,t] - u[g,t-1] 
+    # Commitment transition constraints using startup and shutdown variables
     for g in 1:G
         # First hour: assume initial commitment is 0
-        @constraint(model, v[g,1] >= u[g,1])
-        # Subsequent hours
-        @constraint(model, [t=2:T], v[g,t] >= u[g,t] - u[g,t-1])
+        @constraint(model, u[g,1] - v_start[g,1] + v_shut[g,1] == 0)
+        # Subsequent hours enforce u[t] - u[t-1] = v_start[t] - v_shut[t]
+        @constraint(model, [t=2:T], u[g,t] - u[g,t-1] == v_start[g,t] - v_shut[g,t])
     end
     
     # Fix hydro and nuclear capacities to existing levels
@@ -191,7 +193,8 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
             "load_shed_fixed" => value.(δ_d_fixed),
             "load_shed_flex" => value.(δ_d_flex),
             "commitment" => value.(u),  # Actual commitment levels
-            "startup" => value.(v),     # Actual startup variables
+            "startup" => value.(v_start),     # Actual startup variables
+            "shutdown" => value.(v_shut),    # Actual shutdown variables
             "total_cost" => objective_value(model),
             "investment_cost" => value(investment_cost),
             "fixed_cost" => value(fixed_cost),
@@ -265,12 +268,13 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
     
     # Linearized unit commitment variables
     @variable(model, 0 <= u[1:G, 1:T] <= 1)  # Commitment level (continuous, allows partial commitment)
-    @variable(model, v[1:G, 1:T] >= 0)  # Startup variables (continuous)
+    @variable(model, 0 <= v_start[1:G, 1:T] <= 1)  # Startup variables
+    @variable(model, 0 <= v_shut[1:G, 1:T] <= 1)   # Shutdown variables
     
     # Objective: Operational costs only
     @objective(model, Min, 
         sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p[g,t] + p_flex[g,t]) for g in 1:G) +
-            sum(generators[g].startup_cost * capacities[g] * v[g,t] for g in 1:G) +  # Startup costs scaled by fixed capacity
+            sum(generators[g].startup_cost * capacities[g] * v_start[g,t] for g in 1:G) +  # Startup costs scaled by fixed capacity
             battery.var_om_cost * (p_ch[t] + p_dis[t]) +
             params.load_shed_penalty * (δ_d_fixed[t] + 0.5 * δ_d_flex[t]^2 / params.flex_demand_mw)
             for t in 1:T))
@@ -291,12 +295,12 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
         end
     end
     
-    # Linearized startup constraints: v[g,t] >= u[g,t] - u[g,t-1] 
+    # Commitment transition constraints using startup and shutdown variables
     for g in 1:G
         # First hour: assume initial commitment is 0
-        @constraint(model, v[g,1] >= u[g,1])
-        # Subsequent hours
-        @constraint(model, [t=2:T], v[g,t] >= u[g,t] - u[g,t-1])
+        @constraint(model, u[g,1] - v_start[g,1] + v_shut[g,1] == 0)
+        # Subsequent hours enforce u[t] - u[t-1] = v_start[t] - v_shut[t]
+        @constraint(model, [t=2:T], u[g,t] - u[g,t-1] == v_start[g,t] - v_shut[g,t])
     end
     
     # Battery constraints with FIXED capacities
@@ -332,7 +336,8 @@ function solve_perfect_foresight_operations(generators, battery, capacities, bat
             "load_shed_fixed" => value.(δ_d_fixed),
             "load_shed_flex" => value.(δ_d_flex),
             "commitment" => value.(u),  # Actual commitment levels
-            "startup" => value.(v),     # Actual startup variables
+            "startup" => value.(v_start),     # Actual startup variables
+            "shutdown" => value.(v_shut),    # Actual shutdown variables
             "total_cost" => objective_value(model),
             "prices" => dual.(power_balance),
             "generator_availabilities" => availabilities
@@ -384,7 +389,8 @@ function build_dlac_i_model(generators, battery, capacities, battery_power_cap, 
     @variable(model, x_δ_d_fixed >= 0)              # Fixed demand load shedding (current period)
     @variable(model, x_δ_d_flex >= 0)               # Flexible demand load shedding (current period)
     @variable(model, 0 <= x_u[1:G] <= 1)           # Commitment level (current period)
-    @variable(model, x_v[1:G] >= 0)                 # Startup variables (current period)
+    @variable(model, 0 <= x_v_start[1:G] <= 1)     # Startup variables (current period)
+    @variable(model, 0 <= x_v_shut[1:G] <= 1)      # Shutdown variables (current period)
     
     # Decision variables for lookahead horizon
     @variable(model, p̃[1:G, 1:H] >= 0)  # Generation for fixed demand
@@ -394,17 +400,18 @@ function build_dlac_i_model(generators, battery, capacities, battery_power_cap, 
     @variable(model, s̃oc[1:H] >= 0)     # Battery SOC
     @variable(model, δ̃_d_fixed[1:H] >= 0)  # Fixed demand load shedding
     @variable(model, δ̃_d_flex[1:H] >= 0)   # Flexible demand load shedding
-    @variable(model, 0 <= ũ[1:G, 1:H] <= 1)  # Commitment level (lookahead)
-    @variable(model, ṽ[1:G, 1:H] >= 0)       # Startup variables (lookahead)
+    @variable(model, 0 <= ũ[1:G, 1:H] <= 1)        # Commitment level (lookahead)
+    @variable(model, 0 <= ṽ_start[1:G, 1:H] <= 1)  # Startup variables (lookahead)
+    @variable(model, 0 <= ṽ_shut[1:G, 1:H] <= 1)   # Shutdown variables (lookahead)
     
     # Store variables for easy access
     variables = Dict(
         "x_p" => x_p, "x_p_flex" => x_p_flex, "x_p_ch" => x_p_ch, "x_p_dis" => x_p_dis,
         "x_soc" => x_soc, "x_δ_d_fixed" => x_δ_d_fixed, "x_δ_d_flex" => x_δ_d_flex,
-        "x_u" => x_u, "x_v" => x_v,
+        "x_u" => x_u, "x_v_start" => x_v_start, "x_v_shut" => x_v_shut,
         "p̃" => p̃, "p̃_flex" => p̃_flex, "p̃_ch" => p̃_ch, "p̃_dis" => p̃_dis,
         "s̃oc" => s̃oc, "δ̃_d_fixed" => δ̃_d_fixed, "δ̃_d_flex" => δ̃_d_flex,
-        "ũ" => ũ, "ṽ" => ṽ
+        "ũ" => ũ, "ṽ_start" => ṽ_start, "ṽ_shut" => ṽ_shut
     )
     
     # Non-anticipativity constraints linking here-and-now to first period variables
@@ -416,7 +423,8 @@ function build_dlac_i_model(generators, battery, capacities, battery_power_cap, 
     @constraint(model, δ̃_d_fixed[1] == x_δ_d_fixed)
     @constraint(model, δ̃_d_flex[1] == x_δ_d_flex)
     @constraint(model, [g=1:G], ũ[g, 1] == x_u[g])
-    @constraint(model, [g=1:G], ṽ[g, 1] == x_v[g])
+    @constraint(model, [g=1:G], ṽ_start[g, 1] == x_v_start[g])
+    @constraint(model, [g=1:G], ṽ_shut[g, 1] == x_v_shut[g])
     
     # Power balance constraints (RHS will be updated)
     power_balance_constrs = @constraint(model, power_balance_lookahead[τ=1:H],
@@ -438,9 +446,12 @@ function build_dlac_i_model(generators, battery, capacities, battery_power_cap, 
         end
     end
     
-    # Linearized startup constraints for lookahead horizon
-    startup_constrs = @constraint(model, [g=1:G, τ=2:H], ṽ[g,τ] >= ũ[g,τ] - ũ[g,τ-1])
-    startup_initial_constrs = []  # Will be updated dynamically based on previous commitment
+    # Commitment transition constraints for lookahead horizon
+    startup_constrs = @constraint(model, [g=1:G, τ=2:H],
+        ũ[g,τ] - ũ[g,τ-1] == ṽ_start[g,τ] - ṽ_shut[g,τ])
+    # Transition constraints for the current period relative to previous commitment
+    startup_initial_constrs = @constraint(model, [g=1:G],
+        variables["x_u"][g] - variables["x_v_start"][g] + variables["x_v_shut"][g] == 0.0)
     
     # Battery constraints (capacity limits - will be updated when capacities change)
     battery_charge_constrs = @constraint(model, [τ=1:H], p̃_ch[τ] <= battery_power_cap)
@@ -457,7 +468,7 @@ function build_dlac_i_model(generators, battery, capacities, battery_power_cap, 
     # This is the deterministic equivalent of SLAC's stochastic objective
     operational_cost = sum(
         sum((generators[g].fuel_cost + generators[g].var_om_cost) * (p̃[g,τ] + p̃_flex[g,τ]) for g in 1:G) +
-        sum(generators[g].startup_cost * capacities[g] * ṽ[g,τ] for g in 1:G) +  # Startup costs scaled by capacity
+        sum(generators[g].startup_cost * capacities[g] * ṽ_start[g,τ] for g in 1:G) +  # Startup costs scaled by capacity
         battery.var_om_cost * (p̃_ch[τ] + p̃_dis[τ]) +
         params.load_shed_penalty * (δ̃_d_fixed[τ] + 0.5 * δ̃_d_flex[τ]^2 / params.flex_demand_mw)
         for τ in 1:H
@@ -491,8 +502,9 @@ end
 Update the DLAC-i model with current time-step data and solve with warm start.
 Uses generator-indexed availability profiles.
 """
-function update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery, 
-                                 capacities, battery_power_cap, battery_energy_cap, 
+function update_and_solve_dlac_i(model, variables, constraint_refs, generators, battery,
+                                 capacities, battery_power_cap, battery_energy_cap,
+                                 prev_commitment::Vector{Float64},
                                  current_soc::Float64, t::Int,
                                  actual_demand, availabilities, mean_demand_forecast, mean_generator_forecasts,
                                  horizon, params)
@@ -514,7 +526,8 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
             warm_start_values["x_δ_d_flex"] = value(variables["x_δ_d_flex"])
             # Store UC variable warm starts
             warm_start_values["x_u"] = [value(variables["x_u"][g]) for g in 1:G]
-            warm_start_values["x_v"] = [value(variables["x_v"][g]) for g in 1:G]
+            warm_start_values["x_v_start"] = [value(variables["x_v_start"][g]) for g in 1:G]
+            warm_start_values["x_v_shut"] = [value(variables["x_v_shut"][g]) for g in 1:G]
         catch
             # No previous solution available - warm_start_values remains empty
         end
@@ -546,7 +559,12 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
             end
         end
     end
-    
+
+    # Update transition constraints for current period using previous commitments
+    for g in 1:G
+        set_normalized_rhs(constraint_refs["startup_initial"][g], prev_commitment[g])
+    end
+
     # Update battery SOC initial condition (constraint is: s̃oc[1] == current_soc + charge - discharge)
     # We need to modify the constraint to be: s̃oc[1] - p̃_ch[1] * efficiency + p̃_dis[1] / efficiency == current_soc
     # But since constraint is already built as s̃oc[1] == RHS, we set RHS to current_soc
@@ -564,7 +582,8 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
                 set_start_value(variables["x_p_flex"][g], warm_start_values["x_p_flex"][g])
                 # Apply UC variable warm starts
                 set_start_value(variables["x_u"][g], warm_start_values["x_u"][g])
-                set_start_value(variables["x_v"][g], warm_start_values["x_v"][g])
+                set_start_value(variables["x_v_start"][g], warm_start_values["x_v_start"][g])
+                set_start_value(variables["x_v_shut"][g], warm_start_values["x_v_shut"][g])
             end
             set_start_value(variables["x_p_ch"], warm_start_values["x_p_ch"])
             set_start_value(variables["x_p_dis"], warm_start_values["x_p_dis"])
@@ -590,7 +609,8 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
             value(variables["x_δ_d_fixed"]),
             value(variables["x_δ_d_flex"]),
             value.(variables["x_u"]),
-            value.(variables["x_v"]),
+            value.(variables["x_v_start"]),
+            value.(variables["x_v_shut"]),
             dual(constraint_refs["power_balance"][1])
         )
     else
@@ -599,7 +619,7 @@ function update_and_solve_dlac_i(model, variables, constraint_refs, generators, 
             fill(NaN, G),
             fill(NaN, G),
             NaN, NaN, NaN, NaN, NaN,
-            fill(NaN, G), fill(NaN, G),  # UC variables
+            fill(NaN, G), fill(NaN, G), fill(NaN, G),  # UC variables
             params.load_shed_penalty
         )
     end
@@ -914,7 +934,8 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
     @variable(model, x_δ_d_fixed >= 0)              # Fixed demand load shedding (current period)
     @variable(model, x_δ_d_flex >= 0)               # Flexible demand load shedding (current period)
     @variable(model, 0 <= x_u[1:G] <= 1)           # Commitment level (current period)
-    @variable(model, x_v[1:G] >= 0)                 # Startup variables (current period)
+    @variable(model, 0 <= x_v_start[1:G] <= 1)     # Startup variables (current period)
+    @variable(model, 0 <= x_v_shut[1:G] <= 1)      # Shutdown variables (current period)
     
     # Scenario-specific variables for ALL time periods (1:H)
     @variable(model, p̃[1:G, 1:H, 1:S] >= 0)        # Generation for fixed demand by scenario
@@ -924,17 +945,18 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
     @variable(model, s̃oc[1:H, 1:S] >= 0)            # Battery SOC by scenario
     @variable(model, δ̃_d_fixed[1:H, 1:S] >= 0)       # Fixed demand load shedding by scenario
     @variable(model, δ̃_d_flex[1:H, 1:S] >= 0)        # Flexible demand load shedding by scenario
-    @variable(model, 0 <= ũ[1:G, 1:H, 1:S] <= 1)    # Commitment level by scenario
-    @variable(model, ṽ[1:G, 1:H, 1:S] >= 0)          # Startup variables by scenario
+    @variable(model, 0 <= ũ[1:G, 1:H, 1:S] <= 1)        # Commitment level by scenario
+    @variable(model, 0 <= ṽ_start[1:G, 1:H, 1:S] <= 1)  # Startup variables by scenario
+    @variable(model, 0 <= ṽ_shut[1:G, 1:H, 1:S] <= 1)   # Shutdown variables by scenario
     
     # Store variables for easy access
     variables = Dict(
         "x_p" => x_p, "x_p_flex" => x_p_flex, "x_p_ch" => x_p_ch, "x_p_dis" => x_p_dis,
         "x_soc" => x_soc, "x_δ_d_fixed" => x_δ_d_fixed, "x_δ_d_flex" => x_δ_d_flex,
-        "x_u" => x_u, "x_v" => x_v,
+        "x_u" => x_u, "x_v_start" => x_v_start, "x_v_shut" => x_v_shut,
         "p̃" => p̃, "p̃_flex" => p̃_flex, "p̃_ch" => p̃_ch, "p̃_dis" => p̃_dis,
         "s̃oc" => s̃oc, "δ̃_d_fixed" => δ̃_d_fixed, "δ̃_d_flex" => δ̃_d_flex,
-        "ũ" => ũ, "ṽ" => ṽ
+        "ũ" => ũ, "ṽ_start" => ṽ_start, "ṽ_shut" => ṽ_shut
     )
     
     # Non-anticipativity constraints linking here-and-now to scenario variables
@@ -946,7 +968,8 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
     @constraint(model, [s=1:S], δ̃_d_fixed[1, s] == x_δ_d_fixed)
     @constraint(model, [s=1:S], δ̃_d_flex[1, s] == x_δ_d_flex)
     @constraint(model, [g=1:G, s=1:S], ũ[g, 1, s] == x_u[g])
-    @constraint(model, [g=1:G, s=1:S], ṽ[g, 1, s] == x_v[g])
+    @constraint(model, [g=1:G, s=1:S], ṽ_start[g, 1, s] == x_v_start[g])
+    @constraint(model, [g=1:G, s=1:S], ṽ_shut[g, 1, s] == x_v_shut[g])
     
     # Power balance constraints (RHS will be updated for each scenario and time period)
     power_balance_constrs = @constraint(model, power_balance_lookahead[τ=1:H, s=1:S],
@@ -969,8 +992,12 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
         end
     end
     
-    # Linearized startup constraints for scenario-dependent lookahead horizon
-    startup_constrs = @constraint(model, [g=1:G, τ=2:H, s=1:S], ṽ[g,τ,s] >= ũ[g,τ,s] - ũ[g,τ-1,s])
+    # Commitment transition constraints for scenario-dependent lookahead horizon
+    startup_constrs = @constraint(model, [g=1:G, τ=2:H, s=1:S],
+        ũ[g,τ,s] - ũ[g,τ-1,s] == ṽ_start[g,τ,s] - ṽ_shut[g,τ,s])
+    # Transition constraints for the current period relative to previous commitment
+    startup_initial_constrs = @constraint(model, [g=1:G],
+        variables["x_u"][g] - variables["x_v_start"][g] + variables["x_v_shut"][g] == 0.0)
     
     # Battery constraints (capacity limits - will be updated when capacities change)
     battery_charge_constrs = @constraint(model, [τ=1:H, s=1:S], p̃_ch[τ,s] <= battery_power_cap)
@@ -997,6 +1024,7 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
         "generation" => generation_constrs,
         "min_generation" => min_generation_constrs,
         "startup" => startup_constrs,
+        "startup_initial" => startup_initial_constrs,
         "soc_initial" => soc_initial_constrs,
         "soc_evolution" => soc_evolution_constrs,
         "battery_charge" => battery_charge_constrs,
@@ -1010,16 +1038,17 @@ function build_slac_model(generators, battery, capacities, battery_power_cap, ba
 end
 
 """
-    update_and_solve_slac(model, variables, constraint_refs, generators, battery, 
-                          capacities, battery_power_cap, battery_energy_cap, current_soc, t,
+    update_and_solve_slac(model, variables, constraint_refs, generators, battery,
+                          capacities, battery_power_cap, battery_energy_cap, prev_commitment, current_soc, t,
                           actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
                           horizon, params, scenario_weights)
 
 Update the SLAC model with current time-step data and scenario forecasts, then solve with warm start.
 Uses generator-indexed availability profiles.
 """
-function update_and_solve_slac(model, variables, constraint_refs, generators, battery, 
-                               capacities, battery_power_cap, battery_energy_cap, 
+function update_and_solve_slac(model, variables, constraint_refs, generators, battery,
+                               capacities, battery_power_cap, battery_energy_cap,
+                               prev_commitment::Vector{Float64},
                                current_soc::Float64, t::Int,
                                actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
                                horizon, params, scenario_weights; model_cache=nothing)
@@ -1048,7 +1077,8 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
             warm_start_values["x_δ_d_flex"] = value(variables["x_δ_d_flex"])
             # Store UC variable warm starts for SLAC
             warm_start_values["x_u"] = [value(variables["x_u"][g]) for g in 1:G]
-            warm_start_values["x_v"] = [value(variables["x_v"][g]) for g in 1:G]
+            warm_start_values["x_v_start"] = [value(variables["x_v_start"][g]) for g in 1:G]
+            warm_start_values["x_v_shut"] = [value(variables["x_v_shut"][g]) for g in 1:G]
             warm_start_applied = true
         catch e
             # No previous solution available
@@ -1096,6 +1126,11 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
         end
     end
     
+    # Update transition constraints for current period using previous commitments
+    for g in 1:G
+        set_normalized_rhs(constraint_refs["startup_initial"][g], prev_commitment[g])
+    end
+
     # Update battery SOC initial condition
     for s in 1:S
         set_normalized_rhs(constraint_refs["soc_initial"][s], current_soc)
@@ -1111,7 +1146,7 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
         scenario_costs = []
         for s in 1:S
             scenario_cost = sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * (variables["p̃"][g,τ,s] + variables["p̃_flex"][g,τ,s]) for g in 1:G) +
-                              sum(generators[g].startup_cost * capacities[g] * variables["ṽ"][g,τ,s] for g in 1:G) +  # Startup costs scaled by capacity
+                              sum(generators[g].startup_cost * capacities[g] * variables["ṽ_start"][g,τ,s] for g in 1:G) +  # Startup costs scaled by capacity
                               battery.var_om_cost * (variables["p̃_ch"][τ,s] + variables["p̃_dis"][τ,s]) +
                               params.load_shed_penalty * (variables["δ̃_d_fixed"][τ,s] + 0.5 * variables["δ̃_d_flex"][τ,s]^2 / params.flex_demand_mw)
                               for τ in 1:H)
@@ -1135,7 +1170,8 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
                 set_start_value(variables["x_p_flex"][g], warm_start_values["x_p_flex"][g])
                 # Apply UC variable warm starts for SLAC
                 set_start_value(variables["x_u"][g], warm_start_values["x_u"][g])
-                set_start_value(variables["x_v"][g], warm_start_values["x_v"][g])
+                set_start_value(variables["x_v_start"][g], warm_start_values["x_v_start"][g])
+                set_start_value(variables["x_v_shut"][g], warm_start_values["x_v_shut"][g])
             end
             set_start_value(variables["x_p_ch"], warm_start_values["x_p_ch"])
             set_start_value(variables["x_p_dis"], warm_start_values["x_p_dis"])
@@ -1175,7 +1211,8 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
             value(variables["x_δ_d_fixed"]),
             value(variables["x_δ_d_flex"]),
             value.(variables["x_u"]),
-            value.(variables["x_v"]),
+            value.(variables["x_v_start"]),
+            value.(variables["x_v_shut"]),
             expected_price
         )
     else
@@ -1184,7 +1221,7 @@ function update_and_solve_slac(model, variables, constraint_refs, generators, ba
             fill(NaN, G),
             fill(NaN, G),
             NaN, NaN, NaN, NaN, NaN,
-            fill(NaN, G), fill(NaN, G),  # UC variables
+            fill(NaN, G), fill(NaN, G), fill(NaN, G),  # UC variables
             params.load_shed_penalty
         )
     end
@@ -1497,6 +1534,8 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
     load_shed_flex_schedule = zeros(T)
     commitment_schedule = zeros(G, T)
     startup_schedule = zeros(G, T)
+    shutdown_schedule = zeros(G, T)
+    shutdown_schedule = zeros(G, T)
     prices = zeros(T)
     
     # State tracking
@@ -1509,16 +1548,18 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
         horizon = t:horizon_end
         
         # Update and solve the cached model
+        prev_commitment = t > 1 ? commitment_schedule[:, t-1] : zeros(G)
         result = update_and_solve_dlac_i(
-            cached_model, cached_variables, cached_constraint_refs, generators, battery, 
+            cached_model, cached_variables, cached_constraint_refs, generators, battery,
             capacities, battery_power_cap, battery_energy_cap,
+            prev_commitment,
             current_soc, t,
             actual_demand, availabilities, mean_demand_forecast, mean_generator_forecasts,
             horizon, params
         )
         
         # Extract results
-        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, x_u_val, x_v_val, price_val = result
+        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, x_u_val, x_v_start_val, x_v_shut_val, price_val = result
         
         if !any(isnan, x_p_val)
             # Store first-period decisions
@@ -1531,7 +1572,8 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
             load_shed_fixed_schedule[t] = x_δ_d_fixed_val
             load_shed_flex_schedule[t] = x_δ_d_flex_val
             commitment_schedule[:, t] = x_u_val
-            startup_schedule[:, t] = x_v_val
+            startup_schedule[:, t] = x_v_start_val
+            shutdown_schedule[:, t] = x_v_shut_val
             prices[t] = price_val
             
             # Update SOC state for next iteration
@@ -1557,6 +1599,7 @@ function solve_dlac_i_with_cached_model(generators, battery, capacities, battery
         "load_shed_flex" => load_shed_flex_schedule,
         "commitment" => commitment_schedule,  # Actual UC variables
         "startup" => startup_schedule,        # Actual startup variables
+        "shutdown" => shutdown_schedule,      # Actual shutdown variables
         "prices" => prices,
         "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
                                (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
@@ -1628,16 +1671,17 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
         horizon = t:horizon_end
         
         # Update and solve the cached model
+        prev_commitment = t > 1 ? commitment_schedule[:, t-1] : zeros(G)
         result = update_and_solve_slac(
-            cached_model, cached_variables, cached_constraint_refs, generators, battery, 
-            capacities, battery_power_cap, battery_energy_cap,
+            cached_model, cached_variables, cached_constraint_refs, generators, battery,
+            capacities, battery_power_cap, battery_energy_cap, prev_commitment,
             current_soc, t,
             actual_demand, availabilities, demand_scenarios, generator_availability_scenarios,
             horizon, params, scenario_weights; model_cache=model_cache
         )
         
         # Extract results
-        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, x_u_val, x_v_val, price_val = result
+        x_p_val, x_p_flex_val, x_p_ch_val, x_p_dis_val, x_soc_val, x_δ_d_fixed_val, x_δ_d_flex_val, x_u_val, x_v_start_val, x_v_shut_val, price_val = result
         
         if !any(isnan, x_p_val)
             # Store first-period decisions
@@ -1650,7 +1694,8 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
             load_shed_fixed_schedule[t] = x_δ_d_fixed_val
             load_shed_flex_schedule[t] = x_δ_d_flex_val
             commitment_schedule[:, t] = x_u_val
-            startup_schedule[:, t] = x_v_val
+            startup_schedule[:, t] = x_v_start_val
+            shutdown_schedule[:, t] = x_v_shut_val
             prices[t] = price_val
             
             # Update SOC state for next iteration
@@ -1676,6 +1721,7 @@ function solve_slac_with_cached_model(generators, battery, capacities, battery_p
         "load_shed_flex" => load_shed_flex_schedule,
         "commitment" => commitment_schedule,  # Actual UC variables
         "startup" => startup_schedule,        # Actual startup variables
+        "shutdown" => shutdown_schedule,      # Actual shutdown variables
         "prices" => prices,
         "total_cost" => sum(sum((generators[g].fuel_cost + generators[g].var_om_cost) * 
                                (generation_schedule[g,t] + generation_flex_schedule[g,t]) for g in 1:G) + 
