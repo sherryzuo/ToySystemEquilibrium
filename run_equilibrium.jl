@@ -155,15 +155,15 @@ function main(policy_choice="dlac")  # Default to DLAC-i policy
         max_iterations = 10000,        # Maximum number of iterations
         tolerance = 1e-2,           # Convergence tolerance (PMR threshold) - PMR < 0.5%
         step_size = 0.5,           # Fixed step size for capacity updates
-        smoothing_beta = 10.0,      # Softplus smoothing parameter
+        smoothing_beta = 0.1,      # Softplus smoothing parameter
         min_capacity_threshold = 1e-6,  # Minimum capacity threshold
         update_generators = update_generators,  # Freeze hydro, update others
         update_battery = true,         # Allow battery updates
         anderson_acceleration = true,   # Enable AAopt1_T Anderson acceleration
-        anderson_depth = 5,            # Use fewer previous iterates for smoother updates
-        anderson_beta_default = 0.5,   # More conservative default relaxation parameter
-        anderson_beta_max = 0.8,       # More conservative maximum relaxation parameter  
-        anderson_T = 10                # Recompute optimal β less frequently for stability
+        anderson_depth = 3,            # Use fewer previous iterates for smoother updates
+        anderson_beta_default = 0.3,   # More conservative default relaxation parameter
+        anderson_beta_max = 0.3,       # More conservative maximum relaxation parameter  
+        anderson_T = 20                # Recompute optimal β less frequently for stability
     )
     
     println("Equilibrium parameters:")

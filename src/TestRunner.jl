@@ -286,6 +286,8 @@ function run_complete_test_system_nyiso(generators, battery, profiles; output_di
     
     generate_all_plots(pf_result, dlac_result, slac_result, profiles,
                       generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+    generate_summer_plots(pf_result, dlac_result, slac_result, profiles,
+                      generators, battery, optimal_capacities, optimal_battery_power, output_dir)
     
     println("\nComplete NYISO test system finished successfully!")
     println("All results saved to: $(output_dir)/")

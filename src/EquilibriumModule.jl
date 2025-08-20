@@ -366,14 +366,14 @@ Compute the softplus function as a smooth approximation to max(0, x).
 The parameter β controls the sharpness of the approximation.
 Uses numerically stable implementation for large inputs.
 """
-function softplus(x, β=10.0)
+function softplus(x, β=0.1)
     # For large inputs, softplus(x) ≈ x to avoid overflow
     # Use the identity: log(1 + exp(βx)) = βx + log(1 + exp(-βx)) for βx > 0
     βx = β * x
     if βx > 20.0  # exp(20) ≈ 5e8, beyond this we risk overflow
         return x  # For large x, softplus(x) ≈ x
-    elseif βx < -20.0  # For very negative x, softplus(x) ≈ 0
-        return 1e-5
+    # elseif βx < -20.0  # For very negative x, softplus(x) ≈ 0
+    #     return 1
     else
         return (1.0 / β) * log(1.0 + exp(βx))
     end
@@ -413,17 +413,8 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
             # Additive update: capacity + step_size * PMR / 100
             new_cap = Float64(current_cap) + Float64(step_size) * (Float64(pmr) / 100.0)
             
-            # Allow zero capacity for ST (Steam Turbine) generators
-            if generators[g].name == "ST"
-                if pmr < -1.0  # If PMR is significantly negative, drive to zero
-                    new_capacities[g] = 0.0
-                else
-                    new_capacities[g] = Float64(max(0.0, new_cap))  # Allow zero capacity
-                end
-            else
-                new_capacities[g] = Float64(softplus(new_cap))  # Use softplus for other generators
-            end
-            
+            new_capacities[g] = Float64(max(0.0, new_cap))  # Use softplus for other generators
+
             println("  Gen $g ($(generators[g].name)) - UPDATING:")
             println("    Current: $(round(current_cap, digits=2)) MW, PMR: $(round(pmr, digits=2))%")
             println("    Update: $(round(new_capacities[g], digits=2)) MW")
@@ -442,7 +433,7 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
     if update_battery
         # Additive update for battery: capacity + step_size * PMR / 100
         new_battery_power_cap = Float64(current_battery_power_cap) + Float64(step_size) * (Float64(battery_pmr) / 100.0)
-        new_battery_power_cap = Float64(softplus(new_battery_power_cap))
+        new_battery_power_cap = Float64(max(0.0,new_battery_power_cap))
         
         println("  Battery - UPDATING:")
         println("    Current: $(round(current_battery_power_cap, digits=2)) MW, PMR: $(round(battery_pmr, digits=2))%")
