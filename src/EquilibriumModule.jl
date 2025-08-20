@@ -370,11 +370,6 @@ function softplus(x, β=10.0)
     # For large inputs, softplus(x) ≈ x to avoid overflow
     # Use the identity: log(1 + exp(βx)) = βx + log(1 + exp(-βx)) for βx > 0
     βx = β * x
-    if βx > 20.0  # exp(20) ≈ 5e8, beyond this we risk overflow
-        return x  # For large x, softplus(x) ≈ x
-    elseif βx < -20.0  # For very negative x, softplus(x) ≈ 0
-        return 0.0
-    else
         return (1.0 / β) * log(1.0 + exp(βx))
     end
 end
