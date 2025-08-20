@@ -370,7 +370,7 @@ function softplus(x, β=10.0)
     # For large inputs, softplus(x) ≈ x to avoid overflow
     # Use the identity: log(1 + exp(βx)) = βx + log(1 + exp(-βx)) for βx > 0
     βx = β * x
-    return (1.0 / β) * log(1.0 + exp(βx))
+    return min(x, 1e-6)
 end
 
 """

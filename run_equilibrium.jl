@@ -216,4 +216,4 @@ end
 # results = main("dlac")   # for DLAC-i  
 # results = main("both")   # for both policies
 
-results = main("slac")
+results = main("dlac")
