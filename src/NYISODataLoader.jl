@@ -11,10 +11,12 @@ module NYISODataLoader
 using CSV
 using DataFrames
 using Statistics
+using HDF5
 
 export load_nyiso_generators, load_nyiso_demand, load_nyiso_fuels, load_nyiso_variability
 export create_nyiso_system_profiles, process_nyiso_thermal_generators
 export process_nyiso_renewable_generators, process_nyiso_storage, interpolate_zero_values
+export load_hdf5_scenarios, load_demand_scenarios, load_wind_scenarios, load_solar_scenarios
 
 # =============================================================================
 # NYISO DATA LOADING FUNCTIONS
@@ -74,6 +76,103 @@ function load_nyiso_variability(data_path::String)
     variability_path = joinpath(data_path, "system", "Generators_variability.csv")
     variability_df = CSV.read(variability_path, DataFrame)
     return variability_df
+end
+
+# =============================================================================
+# HDF5 SCENARIO LOADING FUNCTIONS
+# =============================================================================
+
+"""
+    load_hdf5_scenarios(filepath::String, params)
+
+Load 11 scenarios from HDF5 files containing ARPA-E PERFORM dataset.
+Each HDF5 file contains timestamps as keys with 12×49 matrices (12 scenarios × 49 time-steps ahead).
+- Discards first scenario (row 0) which contains actual values
+- Extracts scenarios 1-11 (rows 1-11) 
+- Uses 1-step-ahead forecasts (column 0) to build params.hours time series
+- Returns 11 scenarios as Vector{Vector{Float64}} where scenarios[ω][t] for scenario ω, time t
+"""
+function load_hdf5_scenarios(filepath::String, params)
+    scenarios = Vector{Vector{Float64}}()
+    
+    h5open(filepath, "r") do file
+        # Get all timestamps and sort them
+        timestamps = sort(collect(keys(file)))
+        
+        # Take requested number of hours from params
+        n_hours_actual = min(params.hours, length(timestamps))
+        selected_timestamps = timestamps[1:n_hours_actual]
+        
+        # Initialize 11 scenarios (skip first scenario which is actuals)
+        for ω in 1:11
+            scenarios_ω = Vector{Float64}(undef, n_hours_actual)
+            
+            for (t, timestamp) in enumerate(selected_timestamps)
+                # Read 12×49 matrix for this timestamp
+                data = read(file[timestamp])
+                
+                # Extract 1-step-ahead forecast (column 1, Julia is 1-indexed) 
+                # from scenario ω+1 (skip row 1 which is actuals, use rows 2-12)
+                scenarios_ω[t] = data[ω + 1, 1]  # ω+1 because we skip first scenario (actuals)
+            end
+            
+            push!(scenarios, scenarios_ω)
+        end
+    end
+    
+    return scenarios
+end
+
+"""
+    load_demand_scenarios(params, time_series_path::String="time_series")
+
+Load demand scenarios from HDF5 file. Returns raw MW values.
+"""
+function load_demand_scenarios(params, time_series_path::String="time_series")
+    filepath = joinpath(time_series_path, "load_scenarios_multi_hourly.h5")
+    return load_hdf5_scenarios(filepath, params)
+end
+
+"""
+    load_wind_scenarios(params, time_series_path::String="time_series", existing_capacity::Float64=1.0)
+
+Load wind availability scenarios from HDF5 file. 
+Normalizes by existing_capacity to get availability factors [0,1].
+"""
+function load_wind_scenarios(params, time_series_path::String="time_series", existing_capacity::Float64=1.0)
+    filepath = joinpath(time_series_path, "wind_scenarios_multi_hourly.h5")
+    raw_scenarios = load_hdf5_scenarios(filepath, params)
+    
+    # Normalize by existing capacity to get availability factors
+    normalized_scenarios = Vector{Vector{Float64}}()
+    for scenario in raw_scenarios
+        # Clamp to [0,1] range and normalize by capacity
+        normalized_scenario = clamp.(scenario ./ max(existing_capacity, 1.0), 0.0, 1.0)
+        push!(normalized_scenarios, normalized_scenario)
+    end
+    
+    return normalized_scenarios
+end
+
+"""
+    load_solar_scenarios(params, time_series_path::String="time_series", existing_capacity::Float64=1.0)
+
+Load solar availability scenarios from HDF5 file.
+Normalizes by existing_capacity to get availability factors [0,1].
+"""
+function load_solar_scenarios(params, time_series_path::String="time_series", existing_capacity::Float64=1.0)
+    filepath = joinpath(time_series_path, "solar_scenarios_multi_hourly.h5")
+    raw_scenarios = load_hdf5_scenarios(filepath, params)
+    
+    # Normalize by existing capacity to get availability factors
+    normalized_scenarios = Vector{Vector{Float64}}()
+    for scenario in raw_scenarios
+        # Clamp to [0,1] range and normalize by capacity
+        normalized_scenario = clamp.(scenario ./ max(existing_capacity, 1.0), 0.0, 1.0)
+        push!(normalized_scenarios, normalized_scenario)
+    end
+    
+    return normalized_scenarios
 end
 
 # =============================================================================
@@ -176,10 +275,10 @@ function process_nyiso_thermal_generators(thermal_df::DataFrame, fuels_df::DataF
             new_row.Inv_Cost_per_MWyr,     # inv_cost (from new technology)
             new_row.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from new technology)
             50000.0,                       # max_capacity (not used as constraint)
-            0.0,                           # min_stable_gen (not used)
+            new_row.Min_Power,             # min_stable_gen (minimum power fraction from NYISO)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
-            0.0,                           # startup_cost (not used)
+            new_row.Startup_Cost_per_MW,   # startup_cost (from NYISO data)
             existing_row.Existing_Cap_MW   # existing_capacity
         )
         push!(generators, nuclear_gen)
@@ -224,10 +323,10 @@ function process_nyiso_thermal_generators(thermal_df::DataFrame, fuels_df::DataF
                 new_row.Inv_Cost_per_MWyr,     # inv_cost (from new technology)
                 new_row.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from new technology)
                 50000.0,                       # max_capacity (not used as constraint)
-                0.0,                           # min_stable_gen (not used)
+                new_row.Min_Power,             # min_stable_gen (minimum power fraction from NYISO)
                 1.0,                           # ramp_rate (not used)
                 1.0,                           # efficiency (not used)
-                0.0,                           # startup_cost (not used)
+                new_row.Startup_Cost_per_MW,   # startup_cost (from NYISO data)
                 total_existing_capacity        # existing_capacity
             )
             push!(generators, gas_gen)
@@ -248,8 +347,8 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
     generators = Generator[]
     
     # Process Wind generators (use new for costs, existing for capacity reference)
-    wind_existing = filter(row -> occursin("Wind", row.Resource) && !occursin("_New", row.Resource), vre_df)
-    wind_new = filter(row -> occursin("Wind", row.Resource) && occursin("_New", row.Resource), vre_df)
+    wind_existing = filter(row -> occursin("WindLand", row.Resource) && !occursin("_New", row.Resource), vre_df)
+    wind_new = filter(row -> occursin("WindLand", row.Resource) && occursin("_New", row.Resource), vre_df)
     if nrow(wind_existing) > 0 && nrow(wind_new) > 0
         existing_wind = wind_existing[1, :]
         new_wind = wind_new[1, :]  # Use new wind for costs
@@ -262,18 +361,18 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
             new_wind.Inv_Cost_per_MWyr,    # inv_cost (from new technology)
             new_wind.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from new technology)
             50000.0,                       # max_capacity (not used as constraint)
-            0.0,                           # min_stable_gen (not used)
+            0.0,                           # min_stable_gen (renewables can go to zero)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
-            0.0,                           # startup_cost (not used)
+            0.0,                           # startup_cost (no startup costs for renewables)
             total_wind_capacity            # existing_capacity
         )
         push!(generators, wind_gen)
     end
     
     # Process Solar generators (use new for costs, existing for capacity reference)
-    solar_existing = filter(row -> occursin("Solar", row.Resource) && !occursin("_New", row.Resource), vre_df)
-    solar_new = filter(row -> occursin("Solar", row.Resource) && occursin("_New", row.Resource), vre_df)
+    solar_existing = filter(row -> occursin("SolarUtility", row.Resource) && !occursin("_New", row.Resource), vre_df)
+    solar_new = filter(row -> occursin("SolarUtility", row.Resource) && occursin("_New", row.Resource), vre_df)
     if nrow(solar_existing) > 0 && nrow(solar_new) > 0
         existing_solar = solar_existing[1, :]
         new_solar = solar_new[1, :]  # Use new solar for costs
@@ -286,10 +385,10 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
             new_solar.Inv_Cost_per_MWyr,   # inv_cost (from new technology)
             new_solar.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from new technology)
             50000.0,                       # max_capacity (not used as constraint)
-            0.0,                           # min_stable_gen (not used)
+            0.0,                           # min_stable_gen (renewables can go to zero)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
-            0.0,                           # startup_cost (not used)
+            0.0,                           # startup_cost (no startup costs for renewables)
             total_solar_capacity           # existing_capacity
         )
         push!(generators, solar_gen)
@@ -314,10 +413,10 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
             hydro_inv_cost,                 # inv_cost (from pumped hydro)
             pumped_row.Fixed_OM_Cost_per_MWyr, # fixed_om_cost (from pumped hydro)
             50000.0,                       # max_capacity (not used as constraint)
-            0.0,                           # min_stable_gen (not used)
+            0.0,                           # min_stable_gen (hydro can go to zero)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
-            0.0,                           # startup_cost (not used)
+            0.0,                           # startup_cost (no startup costs for hydro)
             existing_capacity              # existing_capacity (use regular hydro capacity if available)
         )
         push!(generators, hydro_gen)
@@ -332,10 +431,10 @@ function process_nyiso_renewable_generators(vre_df::DataFrame, hydro_df::DataFra
             hydro_inv_cost,                 # inv_cost
             regular_hydro.Fixed_OM_Cost_per_MWyr, # fixed_om_cost
             50000.0,                       # max_capacity (not used as constraint)
-            0.0,                           # min_stable_gen (not used)
+            0.0,                           # min_stable_gen (hydro can go to zero)
             1.0,                           # ramp_rate (not used)
             1.0,                           # efficiency (not used)
-            0.0,                           # startup_cost (not used)
+            0.0,                           # startup_cost (no startup costs for hydro)
             regular_hydro.Existing_Cap_MW   # existing_capacity
         )
         push!(generators, hydro_gen)
@@ -490,25 +589,50 @@ function create_nyiso_system_profiles(demand_df::DataFrame, variability_df::Data
         end
     end
     
-    # Create scenario forecasts (indexed by scenario ω, then by generator g)
-    n_scenarios = 5
-    demand_scenarios = Vector{Vector{Float64}}()
+    # Load real scenario forecasts from HDF5 files (indexed by scenario ω, then by generator g)
+    n_scenarios = 11  # Using 11 scenarios from ARPA-E PERFORM dataset (excluding actuals)
+    
+    # Load demand scenarios from HDF5
+    println("Loading demand scenarios from HDF5...")
+    demand_scenarios = load_demand_scenarios(params, "time_series")
+    
+    # Initialize generator availability scenarios
     generator_availability_scenarios = Vector{Vector{Vector{Float64}}}(undef, n_scenarios)
     
+    # Load renewable scenarios from HDF5 and assign to appropriate generators
+    wind_scenarios = nothing
+    solar_scenarios = nothing
+    
+    for g in 1:G
+        gen = generators[g]
+        if gen.name == "Wind" && wind_scenarios === nothing
+            println("Loading wind scenarios from HDF5...")
+            wind_scenarios = load_wind_scenarios(params, "time_series", gen.existing_capacity)
+        elseif gen.name == "Solar" && solar_scenarios === nothing
+            println("Loading solar scenarios from HDF5...")
+            solar_scenarios = load_solar_scenarios(params, "time_series", gen.existing_capacity)
+        end
+    end
+    
+    # Create generator-specific availability scenarios for all 11 scenarios
     for ω in 1:n_scenarios
-        # Initialize generator availability scenarios for this scenario
         generator_availability_scenarios[ω] = Vector{Vector{Float64}}(undef, G)
         
-        # Create demand scenario with small random variation
-        push!(demand_scenarios, actual_demand .* (1.0 .+ 0.05 * randn(length(actual_demand))))
-        
-        # Create generator-specific availability scenarios
         for g in 1:G
+            gen = generators[g]
             base_availability = generator_availabilities[g]
-            # Add small noise based on generator type
-            noise_level = generators[g].name in ["Wind", "Solar"] ? 0.1 : 0.02
-            scenario_availability = clamp.(base_availability .+ noise_level * randn(length(base_availability)), 0.0, 1.0)
-            generator_availability_scenarios[ω][g] = scenario_availability
+            
+            if gen.name == "Wind" && wind_scenarios !== nothing
+                # Use real wind scenarios
+                generator_availability_scenarios[ω][g] = wind_scenarios[ω]
+            elseif gen.name == "Solar" && solar_scenarios !== nothing
+                # Use real solar scenarios
+                generator_availability_scenarios[ω][g] = solar_scenarios[ω]
+            else
+                # For non-renewable generators, use base availability with minimal variation
+                # (thermal plants have less forecast uncertainty)
+                generator_availability_scenarios[ω][g] = base_availability
+            end
         end
     end
     

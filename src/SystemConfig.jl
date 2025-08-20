@@ -82,7 +82,7 @@ Returns system parameters optimized for NYISO full-year analysis.
 """
 function get_nyiso_system_parameters()
     return SystemParameters(
-        8760,   # hours (full year)
+        8711,   # hours (full year)
         365,    # days (full year)
         1,      # N (individual generators, not fleets)
         42,     # random_seed
