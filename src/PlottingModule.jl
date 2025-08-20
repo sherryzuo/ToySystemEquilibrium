@@ -30,7 +30,7 @@ function setup_paper_quality_plots()
             margin=3Plots.mm)    # Tighter margins
 end
 
-# Professional color palette (colorblind-friendly)
+# Professional color palette (colorblind-friendly) - extended for more generators
 const PAPER_COLORS = [
     RGB(0.0, 0.4, 0.8),     # Blue
     RGB(0.8, 0.2, 0.2),     # Red  
@@ -39,8 +39,20 @@ const PAPER_COLORS = [
     RGB(0.6, 0.0, 0.8),     # Purple
     RGB(0.4, 0.4, 0.4),     # Gray
     RGB(0.8, 0.8, 0.0),     # Yellow
-    RGB(0.0, 0.8, 0.8)      # Cyan
+    RGB(0.0, 0.8, 0.8),     # Cyan
+    RGB(0.7, 0.3, 0.0),     # Brown
+    RGB(1.0, 0.4, 0.7),     # Pink
+    RGB(0.5, 0.8, 0.5),     # Light Green
+    RGB(0.3, 0.3, 0.9),     # Dark Blue
+    RGB(0.9, 0.1, 0.5),     # Magenta
+    RGB(0.1, 0.7, 0.9),     # Light Blue
+    RGB(0.8, 0.5, 0.2)      # Tan
 ]
+
+# Safe color getter that cycles through colors if needed
+function get_safe_color(index::Int)
+    return PAPER_COLORS[((index - 1) % length(PAPER_COLORS)) + 1]
+end
 
 # Line styles for different models
 const PAPER_LINESTYLES = [:solid, :dash, :dot, :dashdot]
@@ -55,6 +67,7 @@ export plot_generation_stacks, plot_system_profiles, plot_capacity_comparison
 export plot_battery_operations, plot_battery_soc_comparison
 export generate_all_plots, save_price_analysis
 export plot_capacity_mix_differences, plot_capacity_mix_stacked, calculate_operational_results_comparison
+export generate_summer_plots
 
 """
     plot_price_time_series(prices, model_name; save_path=nothing)
@@ -69,7 +82,7 @@ function plot_price_time_series(prices, model_name; save_path=nothing)
              title="Price Time Series - $model_name",
              xlabel="Hour", 
              ylabel="Price (\$/MWh)",
-             color=PAPER_COLORS[1],
+             color=get_safe_color(1),
              size=(8*72, 4*72),  # 8x4 inches at 72 DPI base
              legend=false)
     
@@ -78,7 +91,7 @@ function plot_price_time_series(prices, model_name; save_path=nothing)
     max_price = maximum(prices)
     min_price = minimum(prices)
     
-    hline!([avg_price], color=PAPER_COLORS[2], linestyle=:dash, alpha=0.8, 
+    hline!([avg_price], color=get_safe_color(2), linestyle=:dash, alpha=0.8, 
            label="Average: \$$(round(avg_price, digits=2))/MWh")
     
     # Add text annotation with stats
@@ -106,7 +119,7 @@ function plot_price_duration_curves(price_results; save_path=nothing)
              size=(8*72, 5*72),
              legend=:topright)
     
-    colors = PAPER_COLORS[1:3]
+    colors = [get_safe_color(i) for i in 1:3]
     linestyles = PAPER_LINESTYLES[1:3]
     
     for (i, (model_name, prices)) in enumerate(price_results)
@@ -143,9 +156,9 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
               size=(8*72, 3*72),
               legend=:topright)
     
-    plot!(p1, hours, pf_prices, label="Perfect Foresight", color=PAPER_COLORS[2], linestyle=:dash)
-    plot!(p1, hours, dlac_prices, label="DLAC-i", color=PAPER_COLORS[3], linestyle=:dot)
-    plot!(p1, hours, slac_prices, label="SLAC", color=PAPER_COLORS[1], linestyle=:solid)
+    plot!(p1, hours, pf_prices, label="Perfect Foresight", color=get_safe_color(2), linestyle=:dash)
+    plot!(p1, hours, dlac_prices, label="DLAC-i", color=get_safe_color(3), linestyle=:dot)
+    plot!(p1, hours, slac_prices, label="SLAC", color=get_safe_color(1), linestyle=:solid)
     
     # Duration curves
     p2 = plot(title="Price Duration Curves", 
@@ -158,9 +171,9 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
     sorted_dlac = sort(dlac_prices, rev=true)
     sorted_slac = sort(slac_prices, rev=true)
     
-    plot!(p2, hours, sorted_pf, label="Perfect Foresight", color=PAPER_COLORS[2], linestyle=:dash)
-    plot!(p2, hours, sorted_dlac, label="DLAC-i", color=PAPER_COLORS[3], linestyle=:dot)
-    plot!(p2, hours, sorted_slac, label="SLAC", color=PAPER_COLORS[1], linestyle=:solid)
+    plot!(p2, hours, sorted_pf, label="Perfect Foresight", color=get_safe_color(2), linestyle=:dash)
+    plot!(p2, hours, sorted_dlac, label="DLAC-i", color=get_safe_color(3), linestyle=:dot)
+    plot!(p2, hours, sorted_slac, label="SLAC", color=get_safe_color(1), linestyle=:solid)
     
     # Price difference analysis
     p3 = plot(title="Price Differences from Perfect Foresight", 
@@ -175,7 +188,7 @@ function plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; save_
               left_margin=8Plots.mm,
               bottom_margin=6Plots.mm)
     
-    plot!(p3, hours, dlac_prices - pf_prices, label="DLAC-i - PF", color=PAPER_COLORS[3])
+    plot!(p3, hours, dlac_prices - pf_prices, label="DLAC-i - PF", color=get_safe_color(3))
     plot!(p3, hours, slac_prices - pf_prices, label="SLAC - PF", color=PAPER_COLORS[1])
     hline!(p3, [0], color=:black, linestyle=:dash, alpha=0.7, label="Zero Difference")
     
@@ -202,8 +215,8 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
         T = size(generation, 2)
         hours = 1:T
         
-        # Technology colors - use paper-quality palette
-        colors = PAPER_COLORS[1:4]  # Nuclear, Wind, Gas, Battery
+        # Technology colors - use paper-quality palette for all generators
+        G = length(generators)
         
         p = plot(title="Generation Stack - $model_name", 
                  xlabel="Hour", 
@@ -218,7 +231,7 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
         for (g, gen_name) in enumerate([gen.name for gen in generators])
             gen_profile = generation[g, :]
             plot!(p, hours, cumulative + gen_profile, fillrange=cumulative, 
-                  label=gen_name, color=colors[g], alpha=0.7)
+                  label=gen_name, color=get_safe_color(g), alpha=0.7)
             cumulative += gen_profile
         end
         
@@ -226,7 +239,7 @@ function plot_generation_stacks(generation_results, battery_results, demand, gen
         if haskey(battery_results, model_name)
             battery_discharge = battery_results[model_name]
             plot!(p, hours, cumulative + battery_discharge, fillrange=cumulative,
-                  label="Battery", color=colors[4], alpha=0.7)
+                  label="Battery", color=get_safe_color(G+1), alpha=0.7)
             cumulative += battery_discharge
         end
         
@@ -264,7 +277,7 @@ function plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
     
     # Create subplots with paper-quality styling
     p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
-              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(1), legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     # Show availability profiles for first few generators (up to 3 additional plots)
     plots = [p1]
@@ -274,7 +287,7 @@ function plot_system_profiles(profiles::SystemProfiles; save_path=nothing)
         gen_title = "Generator $g Availability"
         p_gen = plot(hours, profiles.generator_availabilities[g], 
                     title=gen_title, xlabel="Hour", ylabel="Capacity Factor",
-                    color=PAPER_COLORS[g+1], legend=false, ylims=(0, 1.1), 
+                    color=get_safe_color(g+1), legend=false, ylims=(0, 1.1), 
                     left_margin=6Plots.mm, bottom_margin=6Plots.mm)
         push!(plots, p_gen)
     end
@@ -318,7 +331,7 @@ function plot_system_profiles(profiles::SystemProfiles, generators; save_path=no
     
     # Create subplots with paper-quality styling
     p1 = plot(hours, profiles.actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
-              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(1), legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     # Show availability profiles for first few generators (up to 3 additional plots)
     plots = [p1]
@@ -329,7 +342,7 @@ function plot_system_profiles(profiles::SystemProfiles, generators; save_path=no
         gen_title = "$gen_name Availability"
         p_gen = plot(hours, profiles.generator_availabilities[g], 
                     title=gen_title, xlabel="Hour", ylabel="Capacity Factor",
-                    color=PAPER_COLORS[g+1], legend=false, ylims=(0, 1.1), 
+                    color=get_safe_color(g+1), legend=false, ylims=(0, 1.1), 
                     left_margin=6Plots.mm, bottom_margin=6Plots.mm)
         push!(plots, p_gen)
     end
@@ -371,16 +384,16 @@ function plot_system_profiles(actual_demand, actual_wind, nuclear_availability, 
     
     # Create subplots with paper-quality styling
     p1 = plot(hours, actual_demand, title="Demand Profile", xlabel="Hour", ylabel="Demand (MW)",
-              color=PAPER_COLORS[1], legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(1), legend=false, left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p2 = plot(hours, actual_wind, title="Wind Capacity Factor", xlabel="Hour", ylabel="Capacity Factor",
-              color=PAPER_COLORS[3], legend=false, ylims=(0, 1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(3), legend=false, ylims=(0, 1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p3 = plot(hours, nuclear_availability, title="Nuclear Availability", xlabel="Hour", ylabel="Available",
-              color=PAPER_COLORS[2], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(2), legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     p4 = plot(hours, gas_availability, title="Gas Availability", xlabel="Hour", ylabel="Available",
-              color=PAPER_COLORS[4], legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
+              color=get_safe_color(4), legend=false, ylims=(0, 1.1), left_margin=6Plots.mm, bottom_margin=6Plots.mm)
     
     combined_plot = plot(p1, p2, p3, p4, layout=(2,2), size=(8*72, 6*72))
     
@@ -402,7 +415,7 @@ function plot_capacity_comparison(generators, battery, optimal_capacities, optim
     push!(tech_names, "Battery")
     
     capacities = [optimal_capacities; optimal_battery_power]
-    colors = PAPER_COLORS[1:length(capacities)]
+    colors = [get_safe_color(i) for i in 1:length(capacities)]
     
     p = bar(tech_names, capacities,
             title="Optimal Capacity Investments",
@@ -434,7 +447,7 @@ Plot battery charge/discharge operations for all models.
 """
 function plot_battery_operations(battery_results, model_names; save_path=nothing)
     plots_list = []
-    colors = PAPER_COLORS[1:3]
+    colors = [get_safe_color(i) for i in 1:3]
     
     for (i, model_name) in enumerate(model_names)
         if haskey(battery_results, model_name)
@@ -485,7 +498,7 @@ end
 Plot battery state of charge comparison across models.
 """
 function plot_battery_soc_comparison(battery_results, model_names; save_path=nothing)
-    colors = PAPER_COLORS[1:3]
+    colors = [get_safe_color(i) for i in 1:3]
     linestyles = PAPER_LINESTYLES[1:3]
     
     p = plot(title="Battery State of Charge Comparison",
@@ -518,12 +531,15 @@ function plot_battery_soc_comparison(battery_results, model_names; save_path=not
 end
 
 """
-    save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
+    save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir, suffix="")
 
 Save detailed price analysis to CSV files.
 """
-function save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
+function save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir, suffix::String="")
     T = length(pf_prices)
+    
+    # Helper function to add suffix to filename
+    add_suffix = (filename) -> suffix == "" ? filename : replace(filename, ".csv" => "_$(suffix).csv")
     
     # Detailed price analysis
     price_analysis_df = DataFrame(
@@ -535,7 +551,7 @@ function save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
         SLAC_vs_PF_Diff = slac_prices - pf_prices,
         SLAC_vs_DLAC_i_Diff = slac_prices - dlac_prices
     )
-    CSV.write(joinpath(output_dir, "comprehensive_price_analysis.csv"), price_analysis_df)
+    CSV.write(joinpath(output_dir, add_suffix("comprehensive_price_analysis.csv")), price_analysis_df)
     
     # Price statistics summary
     price_stats_df = DataFrame(
@@ -546,35 +562,58 @@ function save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
         Std_Price = [std(pf_prices), std(dlac_prices), std(slac_prices)],
         Price_Volatility = [std(pf_prices)/mean(pf_prices), std(dlac_prices)/mean(dlac_prices), std(slac_prices)/mean(slac_prices)]
     )
-    CSV.write(joinpath(output_dir, "price_statistics_summary.csv"), price_stats_df)
+    CSV.write(joinpath(output_dir, add_suffix("price_statistics_summary.csv")), price_stats_df)
     
-    println("Price analysis CSV files saved")
+    println("Price analysis CSV files saved$(suffix == "" ? "" : " with suffix: $suffix")")
 end
 
 """
     generate_all_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
-                      generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+                      generators, battery, optimal_capacities, optimal_battery_power, output_dir;
+                      start_hour=1, end_hour=nothing, suffix="")
 
 Generate all comprehensive plots for the system analysis using SystemProfiles.
+
+Args:
+- start_hour: First hour to include in plots (default: 1)
+- end_hour: Last hour to include in plots (default: all hours)  
+- suffix: Suffix to add to plot filenames and directory (default: "")
 """
 function generate_all_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
-                           generators, battery, optimal_capacities, optimal_battery_power, output_dir)
-    plots_dir = joinpath(output_dir, "plots")
+                           generators, battery, optimal_capacities, optimal_battery_power, output_dir;
+                           start_hour::Int=1, end_hour::Union{Int,Nothing}=nothing, suffix::String="")
+    # Determine time range
+    if end_hour === nothing
+        end_hour = length(profiles.actual_demand)
+    end
+    time_range = start_hour:end_hour
+    
+    # Create output directory with suffix
+    plots_dir_name = suffix == "" ? "plots" : "plots_$(suffix)"
+    plots_dir = joinpath(output_dir, plots_dir_name)
     mkpath(plots_dir)
     
+    println("Generating plots for hours $start_hour-$end_hour ($(length(time_range)) hours)")
+    if suffix != ""
+        println("Plot suffix: $suffix")
+    end
+    
     try
-        # Extract prices
-        pf_prices = pf_result["prices"]
-        dlac_prices = dlac_result["prices"]
-        slac_prices = slac_result["prices"]
+        # Extract prices for the specified time range
+        pf_prices = pf_result["prices"][time_range]
+        dlac_prices = dlac_result["prices"][time_range]
+        slac_prices = slac_result["prices"][time_range]
+        
+        # Helper function to add suffix to filename
+        add_suffix = (filename) -> suffix == "" ? filename : replace(filename, ".png" => "_$(suffix).png")
         
         # Individual price time series
-        plot_price_time_series(pf_prices, "Perfect Foresight"; 
-                              save_path=joinpath(plots_dir, "pf_price_time_series.png"))
-        plot_price_time_series(dlac_prices, "DLAC-i"; 
-                              save_path=joinpath(plots_dir, "dlac_i_price_time_series.png"))
-        plot_price_time_series(slac_prices, "SLAC"; 
-                              save_path=joinpath(plots_dir, "slac_price_time_series.png"))
+        plot_price_time_series(pf_prices, "Perfect Foresight$(suffix == "" ? "" : " - $(uppercasefirst(suffix))")"; 
+                              save_path=joinpath(plots_dir, add_suffix("pf_price_time_series.png")))
+        plot_price_time_series(dlac_prices, "DLAC-i$(suffix == "" ? "" : " - $(uppercasefirst(suffix))")"; 
+                              save_path=joinpath(plots_dir, add_suffix("dlac_i_price_time_series.png")))
+        plot_price_time_series(slac_prices, "SLAC$(suffix == "" ? "" : " - $(uppercasefirst(suffix))")"; 
+                              save_path=joinpath(plots_dir, add_suffix("slac_price_time_series.png")))
         
         # Price duration curves (all models)
         price_results = [
@@ -583,44 +622,44 @@ function generate_all_plots(pf_result, dlac_result, slac_result, profiles::Syste
             ("SLAC", slac_prices)
         ]
         plot_price_duration_curves(price_results; 
-                                  save_path=joinpath(plots_dir, "price_duration_curves.png"))
+                                  save_path=joinpath(plots_dir, add_suffix("price_duration_curves.png")))
         
         # Combined comprehensive price analysis
         plot_combined_price_analysis(pf_prices, dlac_prices, slac_prices; 
-                                    save_path=joinpath(plots_dir, "comprehensive_price_analysis.png"))
+                                    save_path=joinpath(plots_dir, add_suffix("comprehensive_price_analysis.png")))
         
-        # Generation stacks
+        # Generation stacks - extract time range data
         generation_results = [
-            ("Perfect Foresight", pf_result["generation"]),
-            ("DLAC-i", dlac_result["generation"]),
-            ("SLAC", slac_result["generation"])
+            ("Perfect Foresight", pf_result["generation"][:, time_range]),
+            ("DLAC-i", dlac_result["generation"][:, time_range]),
+            ("SLAC", slac_result["generation"][:, time_range])
         ]
         
         battery_discharge_results = Dict(
-            "SLAC" => slac_result["battery_discharge"],
-            "Perfect Foresight" => pf_result["battery_discharge"],
-            "DLAC-i" => dlac_result["battery_discharge"]
+            "SLAC" => slac_result["battery_discharge"][time_range],
+            "Perfect Foresight" => pf_result["battery_discharge"][time_range],
+            "DLAC-i" => dlac_result["battery_discharge"][time_range]
         )
         
-        plot_generation_stacks(generation_results, battery_discharge_results, profiles.actual_demand, generators;
-                              save_path=joinpath(plots_dir, "generation_stacks.png"))
+        plot_generation_stacks(generation_results, battery_discharge_results, profiles.actual_demand[time_range], generators;
+                              save_path=joinpath(plots_dir, add_suffix("generation_stacks.png")))
         
-        # Battery operations plots
+        # Battery operations plots - extract time range data
         battery_detailed_results = Dict(
             "SLAC" => Dict(
-                "charge" => slac_result["battery_charge"],
-                "discharge" => slac_result["battery_discharge"],
-                "soc" => slac_result["battery_soc"]
+                "charge" => slac_result["battery_charge"][time_range],
+                "discharge" => slac_result["battery_discharge"][time_range],
+                "soc" => slac_result["battery_soc"][time_range]
             ),
             "Perfect Foresight" => Dict(
-                "charge" => pf_result["battery_charge"],
-                "discharge" => pf_result["battery_discharge"],
-                "soc" => pf_result["battery_soc"]
+                "charge" => pf_result["battery_charge"][time_range],
+                "discharge" => pf_result["battery_discharge"][time_range],
+                "soc" => pf_result["battery_soc"][time_range]
             ),
             "DLAC-i" => Dict(
-                "charge" => dlac_result["battery_charge"],
-                "discharge" => dlac_result["battery_discharge"],
-                "soc" => dlac_result["battery_soc"]
+                "charge" => dlac_result["battery_charge"][time_range],
+                "discharge" => dlac_result["battery_discharge"][time_range],
+                "soc" => dlac_result["battery_soc"][time_range]
             )
         )
         
@@ -628,21 +667,32 @@ function generate_all_plots(pf_result, dlac_result, slac_result, profiles::Syste
         
         # Plot battery operations (charge/discharge)
         plot_battery_operations(battery_detailed_results, model_names;
-                               save_path=joinpath(plots_dir, "battery_operations.png"))
+                               save_path=joinpath(plots_dir, add_suffix("battery_operations.png")))
         
         # Plot battery SOC comparison
         plot_battery_soc_comparison(battery_detailed_results, model_names;
-                                   save_path=joinpath(plots_dir, "battery_soc_comparison.png"))
+                                   save_path=joinpath(plots_dir, add_suffix("battery_soc_comparison.png")))
         
-        # System profiles (with generator names)
-        plot_system_profiles(profiles, generators; save_path=joinpath(plots_dir, "system_profiles.png"))
+        # System profiles (with generator names) - create subset for time range
+        subset_profiles = SystemProfiles(
+            profiles.actual_demand[time_range],
+            [availability[time_range] for availability in profiles.generator_availabilities],
+            Vector{Vector{Float64}}(),  # Empty scenarios for plotting
+            Vector{Vector{Vector{Float64}}}(),  # Empty scenario availabilities
+            0,  # No scenarios
+            profiles.params
+        )
+        plot_system_profiles(subset_profiles, generators; 
+                            save_path=joinpath(plots_dir, add_suffix("system_profiles.png")))
         
-        # Capacity comparison
+        # Capacity comparison (doesn't depend on time range)
         plot_capacity_comparison(generators, battery, optimal_capacities, optimal_battery_power;
-                                save_path=joinpath(plots_dir, "capacity_comparison.png"))
+                                save_path=joinpath(plots_dir, add_suffix("capacity_comparison.png")))
         
         # Save price analysis to CSV
-        save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir)
+        save_price_analysis(pf_prices, dlac_prices, slac_prices, output_dir, suffix)
+        
+        # Summer plots removed for equilibrium analysis - can be called manually if needed
         
         println("All plots generated successfully in: $plots_dir")
         
@@ -807,7 +857,7 @@ function plot_capacity_mix_differences(equilibrium_results_dir; save_path=nothin
              legend=:topright)
     
     # Use distinct colors for better visibility
-    colors = [PAPER_COLORS[1], PAPER_COLORS[2], PAPER_COLORS[3]]  # Blue, Red, Green
+    colors = [get_safe_color(1), get_safe_color(2), get_safe_color(3)]  # Blue, Red, Green
     
     # Plot bars for each policy with better styling
     bar!(p, x_positions .- bar_width, dlac_capacities, 
@@ -944,15 +994,15 @@ Calculate operational results and total system costs for each policy's capacity 
 Returns operational metrics and total system costs (investment + fixed O&M + operations).
 """
 function calculate_operational_results_comparison(equilibrium_results_dir; save_path=nothing)
-    # Define paths to operations files
-    slac_ops_path = joinpath(equilibrium_results_dir, "equilibrium", "slac", "slac_operations.csv")
-    dlac_ops_path = joinpath(equilibrium_results_dir, "equilibrium", "dlac_i", "dlac_i_operations.csv")
-    pf_ops_path = joinpath(equilibrium_results_dir, "validation", "equilibrium", "perfectforesight", "perfect_foresight_operations.csv")
+    # Define paths to operations files - updated for anderson directory structure
+    slac_ops_path = joinpath(equilibrium_results_dir, "slac", "slac_cached_operations.csv")
+    dlac_ops_path = joinpath(equilibrium_results_dir, "dlac_i", "dlac_i_cached_operations.csv")
+    pf_ops_path = joinpath(equilibrium_results_dir, "perfectforesight", "perfect_foresight_operations.csv")
     
-    # Define paths to equilibrium log files for total costs
-    slac_log_path = joinpath(equilibrium_results_dir, "equilibrium", "slac", "equilibrium_log.csv")
-    dlac_log_path = joinpath(equilibrium_results_dir, "equilibrium", "dlac_i", "equilibrium_log.csv")
-    pf_log_path = joinpath(equilibrium_results_dir, "validation", "equilibrium", "perfectforesight", "equilibrium_log.csv")
+    # Define paths to equilibrium log files for total costs - updated for anderson directory structure
+    slac_log_path = joinpath(equilibrium_results_dir, "slac", "equilibrium_log.csv")
+    dlac_log_path = joinpath(equilibrium_results_dir, "dlac_i", "equilibrium_log.csv")
+    pf_log_path = joinpath(equilibrium_results_dir, "perfectforesight", "equilibrium_log.csv")
     
     # Read operational results
     slac_ops = CSV.read(slac_ops_path, DataFrame)
@@ -1132,6 +1182,172 @@ function calculate_operational_results_comparison(equilibrium_results_dir; save_
     println("-"^80)
     
     return comparison_df, Dict("DLAC-i" => dlac_metrics, "SLAC" => slac_metrics, "Perfect Foresight" => pf_metrics)
+end
+
+"""
+    generate_summer_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
+                         generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+
+Generate focused plots for summer months (June-July, hours 4000-5160) for detailed analysis.
+"""
+function generate_summer_plots(pf_result, dlac_result, slac_result, profiles::SystemProfiles,
+                              generators, battery, optimal_capacities, optimal_battery_power, output_dir)
+    
+    # Define summer period: June-July (approximately hours 4000-5160)
+    # June starts around hour 4344 (31+28+31+30+31 = 151 days * 24 = 3624, plus May = 4344)
+    # July ends around hour 5088 (151 + 30 + 31 = 212 days * 24 = 5088)
+    summer_start = 4000  # Start a bit earlier to capture transition
+    summer_end = 5160    # End a bit later 
+    summer_hours = summer_start:summer_end
+    
+    plots_dir = joinpath(output_dir, "plots", "summer")
+    mkpath(plots_dir)
+    
+    println("Generating summer plots for hours $summer_start-$summer_end (June-July period)")
+    
+    try
+        # Extract summer data
+        pf_prices_summer = pf_result["prices"][summer_hours]
+        dlac_prices_summer = dlac_result["prices"][summer_hours]
+        slac_prices_summer = slac_result["prices"][summer_hours]
+        demand_summer = profiles.actual_demand[summer_hours]
+        
+        # Summer price time series
+        T_summer = length(summer_hours)
+        hours_summer = 1:T_summer
+        
+        # Individual summer price plots
+        plot_price_time_series(pf_prices_summer, "Perfect Foresight - Summer"; 
+                              save_path=joinpath(plots_dir, "pf_price_summer.png"))
+        plot_price_time_series(dlac_prices_summer, "DLAC-i - Summer"; 
+                              save_path=joinpath(plots_dir, "dlac_i_price_summer.png"))
+        plot_price_time_series(slac_prices_summer, "SLAC - Summer"; 
+                              save_path=joinpath(plots_dir, "slac_price_summer.png"))
+        
+        # Combined summer price comparison
+        p_combined = plot(title="Summer Price Comparison (June-July)",
+                         xlabel="Hour", 
+                         ylabel="Price (\$/MWh)",
+                         size=(10*72, 6*72),
+                         legend=:topright)
+        
+        plot!(p_combined, hours_summer, pf_prices_summer, 
+              label="Perfect Foresight", color=get_safe_color(1), linewidth=2)
+        plot!(p_combined, hours_summer, dlac_prices_summer, 
+              label="DLAC-i", color=get_safe_color(2), linewidth=2, linestyle=:dash)
+        plot!(p_combined, hours_summer, slac_prices_summer, 
+              label="SLAC", color=get_safe_color(3), linewidth=2, linestyle=:dot)
+        
+        savefig(p_combined, joinpath(plots_dir, "summer_price_comparison.png"))
+        println("Summer price comparison plot saved")
+        
+        # Summer price duration curves
+        summer_price_results = [
+            ("Perfect Foresight", pf_prices_summer),
+            ("DLAC-i", dlac_prices_summer), 
+            ("SLAC", slac_prices_summer)
+        ]
+        plot_price_duration_curves(summer_price_results; 
+                                  save_path=joinpath(plots_dir, "summer_price_duration_curves.png"))
+        
+        # Combined comprehensive summer price analysis
+        plot_combined_price_analysis(pf_prices_summer, dlac_prices_summer, slac_prices_summer; 
+                                    save_path=joinpath(plots_dir, "summer_comprehensive_price_analysis.png"))
+        
+        # Summer generation stacks
+        generation_results_summer = [
+            ("Perfect Foresight", pf_result["generation"][:, summer_hours]),
+            ("DLAC-i", dlac_result["generation"][:, summer_hours]),
+            ("SLAC", slac_result["generation"][:, summer_hours])
+        ]
+        
+        battery_discharge_results_summer = Dict(
+            "Perfect Foresight" => pf_result["battery_discharge"][summer_hours],
+            "DLAC-i" => dlac_result["battery_discharge"][summer_hours],
+            "SLAC" => slac_result["battery_discharge"][summer_hours]
+        )
+        
+        plot_generation_stacks(generation_results_summer, battery_discharge_results_summer, 
+                              demand_summer, generators;
+                              save_path=joinpath(plots_dir, "summer_generation_stacks.png"))
+        
+        # Summer battery operations
+        battery_detailed_results_summer = Dict(
+            "Perfect Foresight" => Dict(
+                "charge" => pf_result["battery_charge"][summer_hours],
+                "discharge" => pf_result["battery_discharge"][summer_hours],
+                "soc" => pf_result["battery_soc"][summer_hours]
+            ),
+            "DLAC-i" => Dict(
+                "charge" => dlac_result["battery_charge"][summer_hours],
+                "discharge" => dlac_result["battery_discharge"][summer_hours],
+                "soc" => dlac_result["battery_soc"][summer_hours]
+            ),
+            "SLAC" => Dict(
+                "charge" => slac_result["battery_charge"][summer_hours],
+                "discharge" => slac_result["battery_discharge"][summer_hours],
+                "soc" => slac_result["battery_soc"][summer_hours]
+            )
+        )
+        
+        model_names = ["Perfect Foresight", "DLAC-i", "SLAC"]
+        plot_battery_operations(battery_detailed_results_summer, model_names;
+                               save_path=joinpath(plots_dir, "summer_battery_operations.png"))
+        plot_battery_soc_comparison(battery_detailed_results_summer, model_names;
+                                   save_path=joinpath(plots_dir, "summer_battery_soc.png"))
+        
+        # Summer demand and availability profiles
+        summer_profiles = SystemProfiles(
+            demand_summer,
+            [availability[summer_hours] for availability in profiles.generator_availabilities],
+            Vector{Vector{Float64}}(),  # Empty scenarios for plotting
+            Vector{Vector{Vector{Float64}}}(),  # Empty scenario availabilities
+            0,  # No scenarios
+            profiles.params
+        )
+        
+        plot_system_profiles(summer_profiles, generators; 
+                            save_path=joinpath(plots_dir, "summer_system_profiles.png"))
+        
+        # Summer price-demand scatter plot
+        p_scatter = scatter(demand_summer, pf_prices_summer, 
+                           label="Perfect Foresight", 
+                           color=get_safe_color(1), alpha=0.6,
+                           title="Summer Price vs Demand",
+                           xlabel="Demand (MW)", 
+                           ylabel="Price (\$/MWh)",
+                           size=(8*72, 6*72))
+        scatter!(p_scatter, demand_summer, dlac_prices_summer, 
+                label="DLAC-i", color=get_safe_color(2), alpha=0.6)
+        scatter!(p_scatter, demand_summer, slac_prices_summer, 
+                label="SLAC", color=get_safe_color(3), alpha=0.6)
+        
+        savefig(p_scatter, joinpath(plots_dir, "summer_price_demand_scatter.png"))
+        println("Summer price-demand scatter plot saved")
+        
+        # Save summer price analysis to CSV
+        summer_price_df = DataFrame(
+            Hour_in_Summer = 1:T_summer,
+            Absolute_Hour = collect(summer_hours),
+            PF_Price = pf_prices_summer,
+            DLAC_i_Price = dlac_prices_summer,
+            SLAC_Price = slac_prices_summer,
+            Demand = demand_summer,
+            DLAC_i_vs_PF_Diff = dlac_prices_summer - pf_prices_summer,
+            SLAC_vs_PF_Diff = slac_prices_summer - pf_prices_summer,
+            SLAC_vs_DLAC_i_Diff = slac_prices_summer - dlac_prices_summer
+        )
+        CSV.write(joinpath(plots_dir, "summer_price_analysis.csv"), summer_price_df)
+        
+        println("Summer plots generated successfully in: $plots_dir")
+        println("Summer period: Hours $summer_start-$summer_end ($(length(summer_hours)) hours)")
+        
+        return true
+        
+    catch e
+        println("Summer plot generation failed: $e")
+        return false
+    end
 end
 
 end # module PlottingModule

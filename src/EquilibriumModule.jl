@@ -411,7 +411,17 @@ function update_all_capacities(current_capacities, current_battery_power_cap, cu
         if update_generators[g]
             # Additive update: capacity + step_size * PMR / 100
             new_cap = Float64(current_cap) + Float64(step_size) * (Float64(pmr) / 100.0)
-            new_capacities[g] = Float64(softplus(new_cap))
+            
+            # Allow zero capacity for ST (Steam Turbine) generators
+            if generators[g].name == "ST"
+                if pmr < -1.0  # If PMR is significantly negative, drive to zero
+                    new_capacities[g] = 0.0
+                else
+                    new_capacities[g] = Float64(max(0.0, new_cap))  # Allow zero capacity
+                end
+            else
+                new_capacities[g] = Float64(softplus(new_cap))  # Use softplus for other generators
+            end
             
             println("  Gen $g ($(generators[g].name)) - UPDATING:")
             println("    Current: $(round(current_cap, digits=2)) MW, PMR: $(round(pmr, digits=2))%")
@@ -456,13 +466,77 @@ end
 # =============================================================================
 
 """
-    check_convergence(pmr_values, tolerance)
+    check_convergence(pmr_values, tolerance, update_generators=Bool[], update_battery=true)
 
 Check if equilibrium has converged based on PMR tolerance.
+Only considers PMR values for generators/battery that are being updated.
 """
-function check_convergence(pmr_values, tolerance)
-    max_abs_pmr = maximum(abs.(pmr_values))
+function check_convergence(pmr_values, tolerance, update_generators::Vector{Bool}=Bool[], update_battery::Bool=true)
+    G = length(pmr_values) - 1  # Last element is battery PMR
+    
+    # If update_generators is empty, default to updating all generators
+    if isempty(update_generators)
+        update_generators = fill(true, G)
+    end
+    
+    # Collect PMR values only for technologies being updated
+    active_pmr_values = Float64[]
+    
+    # Add generator PMRs for generators being updated
+    for g in 1:G
+        if update_generators[g]
+            push!(active_pmr_values, pmr_values[g])
+        end
+    end
+    
+    # Add battery PMR if battery is being updated
+    if update_battery
+        push!(active_pmr_values, pmr_values[G+1])
+    end
+    
+    # If no generators are being updated, consider converged
+    if isempty(active_pmr_values)
+        return true
+    end
+    
+    max_abs_pmr = maximum(abs.(active_pmr_values))
     return max_abs_pmr < tolerance * 100.0  # Convert tolerance to percentage
+end
+
+"""
+    calculate_max_active_pmr(pmr_values, update_generators=Bool[], update_battery=true)
+
+Calculate maximum absolute PMR considering only generators/battery being updated.
+"""
+function calculate_max_active_pmr(pmr_values, update_generators::Vector{Bool}=Bool[], update_battery::Bool=true)
+    G = length(pmr_values) - 1  # Last element is battery PMR
+    
+    # If update_generators is empty, default to updating all generators
+    if isempty(update_generators)
+        update_generators = fill(true, G)
+    end
+    
+    # Collect PMR values only for technologies being updated
+    active_pmr_values = Float64[]
+    
+    # Add generator PMRs for generators being updated
+    for g in 1:G
+        if update_generators[g]
+            push!(active_pmr_values, pmr_values[g])
+        end
+    end
+    
+    # Add battery PMR if battery is being updated
+    if update_battery
+        push!(active_pmr_values, pmr_values[G+1])
+    end
+    
+    # If no generators are being updated, return 0
+    if isempty(active_pmr_values)
+        return 0.0
+    end
+    
+    return maximum(abs.(active_pmr_values))
 end
 
 """
@@ -680,7 +754,7 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         println("  Step size: $(round(step_size, digits=6))")
         
         # Log current iteration to CSV (real-time logging)
-        max_abs_pmr = maximum(abs.(pmr_values))
+        max_abs_pmr = calculate_max_active_pmr(pmr_values, equilibrium_params.update_generators, equilibrium_params.update_battery)
         # if max_abs_pmr < 100
         #     step_size = step_size * 0.1
         # end
@@ -709,16 +783,24 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
         end
         
         # Check convergence
-        if check_convergence(pmr_values, equilibrium_params.tolerance)
+        if check_convergence(pmr_values, equilibrium_params.tolerance, equilibrium_params.update_generators, equilibrium_params.update_battery)
             println("\n✓ CONVERGENCE ACHIEVED at iteration $iter")
-            println("  Max |PMR|: $(round(maximum(abs.(pmr_values)), digits=3))%")
+            println("  Max |PMR| (active only): $(round(max_abs_pmr, digits=3))%")
             converged = true
             break
         end
         
-        # Store current capacities for Anderson acceleration
-        current_x = vcat(current_capacities, [current_battery_power_cap])
-        push!(x_history, current_x)
+        # Store current capacities for Anderson acceleration (only active generators)
+        active_capacities = Float64[]
+        for g in 1:G
+            if equilibrium_params.update_generators[g]
+                push!(active_capacities, current_capacities[g])
+            end
+        end
+        if equilibrium_params.update_battery
+            push!(active_capacities, current_battery_power_cap)
+        end
+        push!(x_history, active_capacities)
         
         # Compute capacity updates using standard fixed-point iteration
         proposed_capacities, proposed_battery_power_cap, proposed_battery_energy_cap = update_all_capacities(
@@ -728,9 +810,17 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             equilibrium_params.update_generators, equilibrium_params.update_battery
         )
         
-        # Store g(x) for Anderson acceleration  
-        proposed_x = vcat(proposed_capacities, [proposed_battery_power_cap])
-        push!(g_history, proposed_x)
+        # Store g(x) for Anderson acceleration (only active generators)
+        active_proposed_capacities = Float64[]
+        for g in 1:G
+            if equilibrium_params.update_generators[g]
+                push!(active_proposed_capacities, proposed_capacities[g])
+            end
+        end
+        if equilibrium_params.update_battery
+            push!(active_proposed_capacities, proposed_battery_power_cap)
+        end
+        push!(g_history, active_proposed_capacities)
         
         # Apply AAopt1_T Anderson acceleration if enabled
         if equilibrium_params.anderson_acceleration && length(x_history) >= 1
@@ -740,24 +830,38 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
             )
             push!(anderson_beta_history, beta_used)
             
-            # Extract accelerated capacities
-            new_capacities = accelerated_x[1:G]
-            new_battery_power_cap = accelerated_x[G+1]
+            # Extract accelerated capacities and map back to full vectors
+            new_capacities = copy(proposed_capacities)  # Start with proposed values
+            new_battery_power_cap = proposed_battery_power_cap
             
-            # Apply softplus smoothing and enforce minimum thresholds
-            # Use a larger minimum threshold to prevent zero convergence
-            min_threshold = max(equilibrium_params.min_capacity_threshold, 1.0)  # At least 1 MW
-            
+            # Map accelerated values back to active generators only
+            active_idx = 1
             for g in 1:G
-                new_capacities[g] = max(
-                    softplus(new_capacities[g], equilibrium_params.smoothing_beta),
-                    min_threshold
-                )
+                if equilibrium_params.update_generators[g]
+                    new_capacities[g] = accelerated_x[active_idx]
+                    active_idx += 1
+                end
             end
-            new_battery_power_cap = max(
-                softplus(new_battery_power_cap, equilibrium_params.smoothing_beta),
-                min_threshold
-            )
+            if equilibrium_params.update_battery
+                new_battery_power_cap = accelerated_x[active_idx]
+            end
+            
+            # Apply appropriate smoothing for each generator type
+            for g in 1:G
+                if equilibrium_params.update_generators[g]
+                    if generators[g].name == "ST"
+                        # Allow zero capacity for ST generators
+                        new_capacities[g] = max(0.0, new_capacities[g])
+                    else
+                        # Use softplus for other generators
+                        new_capacities[g] = softplus(new_capacities[g], equilibrium_params.smoothing_beta)
+                    end
+                end
+            end
+            
+            if equilibrium_params.update_battery
+                new_battery_power_cap = softplus(new_battery_power_cap, equilibrium_params.smoothing_beta)
+            end
             new_battery_energy_cap = new_battery_power_cap * battery.duration
             
             # Check for unrealistic zero convergence and fall back to standard update
@@ -814,12 +918,13 @@ function solve_equilibrium(generators, battery, initial_capacities, initial_batt
     )
     
     println("\n" * "="^80)
+    final_max_active_pmr = calculate_max_active_pmr(final_pmr, equilibrium_params.update_generators, equilibrium_params.update_battery)
     if converged
         println("EQUILIBRIUM CONVERGED in $iteration iterations")
-        println("Final max |PMR|: $(round(maximum(abs.(final_pmr)), digits=3))%")
+        println("Final max |PMR| (active only): $(round(final_max_active_pmr, digits=3))%")
     else
         println("EQUILIBRIUM DID NOT CONVERGE in $(equilibrium_params.max_iterations) iterations")
-        println("Final max |PMR|: $(round(maximum(abs.(final_pmr)), digits=3))%")
+        println("Final max |PMR| (active only): $(round(final_max_active_pmr, digits=3))%")
     end
     println("Iteration log saved to: $log_file")
     println("="^80)

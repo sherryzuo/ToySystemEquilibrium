@@ -88,7 +88,7 @@ function get_nyiso_system_parameters()
         42,     # random_seed
         10000.0, # load_shed_penalty
         0.001,   # load_shed_quad
-        1000.0   # flex_demand_mw (scaled up for full system)
+        1000.0   #flex_demand_mw
     )
 end
 
@@ -178,9 +178,13 @@ function create_nyiso_system(params::SystemParameters=get_nyiso_system_parameter
     end
     
     # Reduce renewable investment costs by 0.7x (reflecting state subsidies)
-    renewable_multiplier = 0.7
     for (i, gen) in enumerate(generators)
         if gen.name in ["Wind", "Solar"]  # Renewable technologies
+            if gen.name == "Wind"
+                renewable_multiplier = 0.9  # Wind investment cost reduction
+            elseif gen.name == "Solar"
+                renewable_multiplier = 0.7  # Solar investment cost reduction
+            end
             old_cost = gen.inv_cost
             new_generator = Generator(
                 gen.name,

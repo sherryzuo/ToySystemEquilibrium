@@ -100,6 +100,17 @@ function solve_capacity_expansion_model(generators, battery, profiles::SystemPro
         @constraint(model, [t=1:T], p[g,t] + p_flex[g,t] <= y[g] * availabilities[g][t])
     end
     
+    # Fix hydro and nuclear capacities to existing levels
+    for g in 1:G
+        if generators[g].name == "Hydro"
+            @constraint(model, y[g] == generators[g].existing_capacity)
+            println("  Fixed Hydro capacity to $(round(generators[g].existing_capacity, digits=1)) MW")
+        elseif generators[g].name == "Nuclear"
+            @constraint(model, y[g] == generators[g].existing_capacity)
+            println("  Fixed Nuclear capacity to $(round(generators[g].existing_capacity, digits=1)) MW")
+        end
+    end
+    
     # Battery constraints (no SOC bounds as requested)
     @constraint(model, [t=1:T], p_ch[t] <= y_bat_power)
     @constraint(model, [t=1:T], p_dis[t] <= y_bat_power)
